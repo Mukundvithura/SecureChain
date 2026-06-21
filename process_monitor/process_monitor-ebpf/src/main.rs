@@ -1,0 +1,135 @@
+#![no_std]
+#![no_main]
+
+use aya_ebpf::{
+    EbpfContext, helpers,
+    macros::{map, tracepoint},
+    maps::{HashMap, LruHashMap},
+    programs::TracePointContext,
+};
+use aya_log_ebpf::info;
+
+// child_pid -> parent_pid, populated by the sched_process_fork tracepoint.
+#[map]
+static PID_PARENT: HashMap<u32, u32> = HashMap::with_max_entries(8192, 0);
+
+// pids whose execve events we suppress: the noisy vpnip panel widget and any
+// process descended from it. LRU so old entries self-evict (no leak).
+#[map]
+static MUTED: LruHashMap<u32, u8> = LruHashMap::with_max_entries(1024, 0);
+
+// Known-benign periodic widget that polls every second and spawns ip/cut/head/grep.
+const VPNIP: &[u8] = b"/usr/share/kali-themes/xfce4-panel-genmon-vpnip.sh";
+
+#[repr(C)]
+struct SysEnterExecveArgs {
+    _pad: [u8; 16],
+    filename: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+}
+
+// kernel 6.19 layout: comm fields are __data_loc descriptors (4 bytes each).
+//   0: common(8)  8: parent_comm  12: parent_pid  16: child_comm  20: child_pid
+#[repr(C)]
+struct SchedProcessForkArgs {
+    _common: [u8; 8],
+    parent_comm: u32,
+    parent_pid: i32,
+    child_comm: u32,
+    child_pid: i32,
+}
+
+#[inline(always)]
+fn is_vpnip(path: &[u8]) -> bool {
+    if path.len() != VPNIP.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < VPNIP.len() {
+        if path[i] != VPNIP[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+#[tracepoint]
+pub fn process_monitor(ctx: TracePointContext) -> u32 {
+    match try_execve(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_execve(ctx: TracePointContext) -> Result<u32, u32> {
+    let args = unsafe { &*(ctx.as_ptr() as *const SysEnterExecveArgs) };
+
+    let pid = (helpers::bpf_get_current_pid_tgid() >> 32) as u32;
+    let uid = helpers::bpf_get_current_uid_gid() as u32;
+    let ppid = unsafe { PID_PARENT.get(&pid) }.copied().unwrap_or(0);
+
+    // This pid is in a muted subtree (mute is propagated at fork time, so even
+    // non-exec'ing subshells taint their descendants). Drop the event.
+    if unsafe { MUTED.get(&pid) }.is_some() {
+        return Ok(0);
+    }
+
+    let mut buf = [0u8; 64];
+    let filename = match unsafe { helpers::bpf_probe_read_user_str_bytes(args.filename, &mut buf) } {
+        Ok(f) => f,
+        Err(_) => {
+            info!(&ctx, "execve pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid);
+            return Ok(0);
+        }
+    };
+
+    // Mute the widget itself and drop its event.
+    if is_vpnip(filename) {
+        let _ = MUTED.insert(&pid, &1u8, 0);
+        return Ok(0);
+    }
+
+    info!(
+        &ctx,
+        "execve pid={} ppid={} uid={} path={}",
+        pid,
+        ppid,
+        uid,
+        unsafe { core::str::from_utf8_unchecked(filename) }
+    );
+    Ok(0)
+}
+
+#[tracepoint]
+pub fn sched_fork(ctx: TracePointContext) -> u32 {
+    match try_fork(ctx) {
+        Ok(ret) => ret,
+        Err(ret) => ret,
+    }
+}
+
+fn try_fork(ctx: TracePointContext) -> Result<u32, u32> {
+    let args = unsafe { &*(ctx.as_ptr() as *const SchedProcessForkArgs) };
+    let parent_pid = args.parent_pid as u32;
+    let child_pid = args.child_pid as u32;
+    let _ = PID_PARENT.insert(&child_pid, &parent_pid, 0);
+
+    // Propagate muting down the whole subtree: if the parent is muted, so is
+    // the child. This catches subshells that fork but never execve.
+    if unsafe { MUTED.get(&parent_pid) }.is_some() {
+        let _ = MUTED.insert(&child_pid, &1u8, 0);
+    }
+    Ok(0)
+}
+
+#[cfg(not(test))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+
+#[unsafe(link_section = "license")]
+#[unsafe(no_mangle)]
+static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
