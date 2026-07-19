@@ -21,14 +21,6 @@ static MUTED: LruHashMap<u32, u8> = LruHashMap::with_max_entries(1024, 0);
 // Known-benign periodic widget that polls every second and spawns ip/cut/head/grep.
 const VPNIP: &[u8] = b"/usr/share/kali-themes/xfce4-panel-genmon-vpnip.sh";
 
-#[repr(C)]
-struct SysEnterExecveArgs {
-    _pad: [u8; 16],
-    filename: *const u8,
-    argv: *const *const u8,
-    envp: *const *const u8,
-}
-
 // kernel 6.19 layout: comm fields are __data_loc descriptors (4 bytes each).
 //   0: common(8)  8: parent_comm  12: parent_pid  16: child_comm  20: child_pid
 #[repr(C)]
@@ -57,15 +49,16 @@ fn is_vpnip(path: &[u8]) -> bool {
 
 #[tracepoint]
 pub fn process_monitor(ctx: TracePointContext) -> u32 {
-    match try_execve(ctx) {
+    match try_exec(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,
     }
 }
 
-fn try_execve(ctx: TracePointContext) -> Result<u32, u32> {
-    let args = unsafe { &*(ctx.as_ptr() as *const SysEnterExecveArgs) };
-
+// Hooked to sched/sched_process_exec: fires once per *successful* exec (unlike
+// sys_enter_execve, which fires on every PATH-probe attempt). One event per
+// launch, always the final resolved binary.
+fn try_exec(ctx: TracePointContext) -> Result<u32, u32> {
     let pid = (helpers::bpf_get_current_pid_tgid() >> 32) as u32;
     let uid = helpers::bpf_get_current_uid_gid() as u32;
     let ppid = unsafe { PID_PARENT.get(&pid) }.copied().unwrap_or(0);
@@ -76,11 +69,22 @@ fn try_execve(ctx: TracePointContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
+    // `filename` is a __data_loc descriptor at offset 8: the low 16 bits are the
+    // byte offset (within this record) to the inline string. Read it via the
+    // bpf_probe_read helpers rather than a direct ctx deref to stay inside the
+    // record bounds the verifier enforces at attach time.
+    let desc = match unsafe { ctx.read_at::<u32>(8) } {
+        Ok(d) => d,
+        Err(_) => return Ok(0),
+    };
+    let str_off = (desc & 0xffff) as usize;
+    let src = (ctx.as_ptr() as usize + str_off) as *const u8;
+
     let mut buf = [0u8; 64];
-    let filename = match unsafe { helpers::bpf_probe_read_user_str_bytes(args.filename, &mut buf) } {
+    let filename = match unsafe { helpers::bpf_probe_read_kernel_str_bytes(src, &mut buf) } {
         Ok(f) => f,
         Err(_) => {
-            info!(&ctx, "execve pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid);
+            info!(&ctx, "exec pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid);
             return Ok(0);
         }
     };
@@ -93,7 +97,7 @@ fn try_execve(ctx: TracePointContext) -> Result<u32, u32> {
 
     info!(
         &ctx,
-        "execve pid={} ppid={} uid={} path={}",
+        "exec pid={} ppid={} uid={} path={}",
         pid,
         ppid,
         uid,

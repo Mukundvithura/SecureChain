@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
 
     let program: &mut TracePoint = ebpf.program_mut("process_monitor").unwrap().try_into()?;
     program.load()?;
-    program.attach("syscalls", "sys_enter_execve")?;
+    program.attach("sched", "sched_process_exec")?;
 
     let ctrl_c = signal::ctrl_c();
     println!("Waiting for Ctrl-C...");
