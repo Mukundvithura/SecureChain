@@ -48,7 +48,7 @@ Two tracepoints sharing two BPF maps:
 
 | Program | Tracepoint | Role |
 |---------|-----------|------|
-| `process_monitor` | `syscalls/sys_enter_execve` | Log each exec: `pid / ppid / uid / path` |
+| `process_monitor` | `sched/sched_process_exec` | Log each successful exec: `pid / ppid / uid / path` |
 | `sched_fork` | `sched/sched_process_fork` | Record `child → parent` pid; propagate mute |
 
 | Map | Type | Purpose |
@@ -60,12 +60,23 @@ Two tracepoints sharing two BPF maps:
 
 - `sched_process_fork` fires → store `child→parent` in `PID_PARENT`. If the
   parent is in `MUTED`, mute the child too (taints the whole subtree).
-- `sys_enter_execve` fires → look up `ppid`; if pid is muted, drop. Otherwise
-  read the exec path from user memory; if it's the known-noisy widget, mute it
-  and drop; else log the enriched event.
+- `sched_process_exec` fires (once, on a *successful* exec) → look up `ppid`; if
+  pid is muted, drop. Otherwise read the exec path; if it's the known-noisy
+  widget, mute it and drop; else log the enriched event.
 
-The exec path is read with `bpf_probe_read_user_str_bytes` into a 64-byte stack
-buffer (the `filename` pointer is the first syscall arg in the tracepoint).
+The exec path is a `__data_loc char[]` descriptor at offset 8 in the record: the
+low 16 bits are the byte offset (within the record) to the inline string. We
+read that string from the tracepoint (kernel) buffer with
+`bpf_probe_read_kernel_str_bytes` into a 64-byte stack buffer.
+
+> **Why `sched_process_exec`, not `sys_enter_execve`?** The syscall-entry
+> tracepoint fires on *every* `execve` attempt, including the failed PATH probes
+> the loader makes while resolving a bare command name — e.g. launching
+> `exo-open` logged 7 events (`~/.cargo/bin/exo-open`, `/usr/local/sbin/…`, …)
+> for one real launch, all sharing a pid. `sched_process_exec` fires **once per
+> successful exec** and reports the final resolved binary, collapsing those to a
+> single event. Trade-off: failed execs are no longer visible from this hook
+> (they'd need `sys_exit_execve` with a non-zero return, a separate signal).
 
 ---
 
@@ -96,6 +107,7 @@ spawned `ip`/`cut`/`head`/`grep`, flooding the logs. Handled two ways:
 | Wrong fork offsets | 6.19 uses `__data_loc char[]` (4-byte descriptors), not inline `char[16]`; record is 24 B, not 48 B | `parent_pid` @12, `child_pid` @20 |
 | Filter let `ip`/`cut`/… through | bash forks **subshells that never execve**, so exec-time mute never tagged them | propagate mute in the **fork** tracepoint, not just on exec |
 | `pwd` not recorded | `pwd` is a shell **builtin** — no execve happens | expected; use `command pwd` / `/usr/bin/pwd` to force an exec |
+| One launch logged 7× (`exo-open` at 7 different paths, same pid) | `sys_enter_execve` fires on every PATH-probe attempt, not just the one that succeeds | hook `sched/sched_process_exec` instead — fires once per successful exec with the resolved path |
 
 ### Key kernel insight
 A tracepoint BPF program is rejected **at attach time** (not load) with
@@ -112,6 +124,14 @@ offset 16 __data_loc child_comm (4)
 offset 20 child_pid (4)   -> total record = 24 bytes
 ```
 
+`sched_process_exec` format on this kernel:
+```
+offset 0  common header (8)
+offset 8  __data_loc filename (4)   -> low 16 bits = byte offset to inline string
+offset 12 pid (4)
+offset 16 old_pid (4)     -> total record = 20 bytes
+```
+
 ---
 
 ## 6. Build & run
@@ -126,14 +146,14 @@ Generate events in a second terminal (`ls`, `curl google.com`). Stop with Ctrl-C
 
 Sample output:
 ```
-execve pid=70169 ppid=2215 uid=1000 path=/usr/bin/ls
-execve pid=70312 ppid=2215 uid=1000 path=/usr/bin/curl
+exec pid=70169 ppid=2215 uid=1000 path=/usr/bin/ls
+exec pid=70312 ppid=2215 uid=1000 path=/usr/bin/curl
 ```
 
 ### Inspect the loaded program
 ```bash
 sudo bpftool prog show          # tracepoint progs named process_monitor / sched_fork
-sudo bpftool link show          # links to syscalls/sys_enter_execve & sched/sched_process_fork
+sudo bpftool link show          # links to sched/sched_process_exec & sched/sched_process_fork
 sudo bpftool map show           # PID_PARENT (hash) and MUTED (lru_hash)
 ```
 
