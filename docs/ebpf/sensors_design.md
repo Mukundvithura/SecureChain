@@ -1,16 +1,23 @@
-# Process Monitor — Design & Build Notes
+# Sensors — Design & Build Notes
 
-eBPF-based process-launch sensor for the SecRisk supply-chain attack detection
-project. This document summarises what was built, the problems hit along the
+eBPF sensor suite for the SecRisk supply-chain attack detection project. All
+sensors live in one BPF object, emit a single unified event type into one ring
+buffer, and are drained by one userspace loader that normalizes each event to a
+JSON line. This document summarises what was built, the problems hit along the
 way, and how to run/verify it.
+
+Current sensors: **process** (exec + fork lineage) and **file** (write-intent
+opens). **Network** (`tcp_connect`) is designed but not yet built.
 
 ---
 
 ## 1. Goal
 
-Capture every real process launch on the host and enrich each event with enough
-context (path, pid, parent pid, uid) to later reason about supply-chain attack
-patterns (e.g. a build tool spawning a network downloader or shell).
+Capture security-relevant runtime activity — process launches, file writes, and
+(later) outbound connections — enriched with lineage (`pid / ppid / uid / comm`)
+and unified into one event stream, so the detection layer can reason over
+cross-source attack chains (e.g. a build tool that execs a downloader, writes a
+binary to `/tmp`, then connects out).
 
 ---
 
@@ -23,150 +30,214 @@ patterns (e.g. a build tool spawning a network downloader or shell).
 | Language | Rust (stable + nightly + `rust-src`) |
 | Framework | [Aya](https://github.com/aya-rs/aya) (full upstream, pulled from git) |
 | Toolchain | clang, bpftool, bpf-linker, cargo-generate |
-| Scaffold | `cargo generate aya-rs/aya-template` → tracepoint / syscalls / `sys_enter_execve` |
 
-**Workspace** (`process_monitor/`):
+**Workspace** (`sensors/`):
 
 ```
-process_monitor/
-├── process_monitor/          # userspace loader (Tokio)
-├── process_monitor-common/   # shared types
-├── process_monitor-ebpf/     # the eBPF program  <-- main.rs is the real code
-└── Cargo.toml                # workspace; aya deps point at git
+sensors/
+├── sensors/              # userspace loader (Tokio): drains ring buffer, emits JSON
+├── sensors-common/       # shared event schema (no_std; `user` feature adds aya::Pod)
+├── sensors-ebpf/         # the eBPF program
+│   └── src/
+│       ├── main.rs       # maps (EVENTS, PID_PARENT, MUTED) + module wiring
+│       ├── process.rs    # sched_process_exec + sched_process_fork  → EVENT_EXEC
+│       └── file.rs       # sys_enter_openat                          → EVENT_FILE
+└── Cargo.toml            # workspace; aya deps point at git
 ```
 
-> The framework is stock Aya; the **program** is fully custom. The generated
-> template was a one-line `info!("tracepoint sys_enter_execve called")`.
-> `process_monitor-ebpf/src/lib.rs` is unused template residue — the program
-> lives in `main.rs`.
+> One BPF object, three logical sensors as **source modules** (not separate
+> binaries). Each `#[tracepoint]` program is `no_mangle`, so its symbol name is
+> module-independent — userspace looks them up by function name regardless of
+> which module they live in. `sensors-ebpf/src/lib.rs` is unused template
+> residue (it only enables the library target).
 
 ---
 
-## 3. What it does
+## 3. Architecture: one stream
 
-Two tracepoints sharing two BPF maps:
+```
+sensor programs ──> EVENTS ring buffer ──> userspace loader ──> JSON line / event
+(process, file)     (256 KiB, shared)      (tokio AsyncFd)      (stdout)
+```
 
-| Program | Tracepoint | Role |
-|---------|-----------|------|
-| `process_monitor` | `sched/sched_process_exec` | Log each successful exec: `pid / ppid / uid / path` |
-| `sched_fork` | `sched/sched_process_fork` | Record `child → parent` pid; propagate mute |
+**Shared schema** (`sensors-common`): every sensor emits the same fixed-size
+`#[repr(C)]` `Event` — a common `EventHeader` (`timestamp, pid, ppid, uid, kind,
+comm`) plus a tagged `Payload` union selected by `kind`:
+
+| `kind` | Payload | Fields |
+|--------|---------|--------|
+| `EVENT_EXEC` | `ExecPayload` | `filename[256]` |
+| `EVENT_FILE` | `FilePayload` | `path[256]`, `flags` |
+| `EVENT_NET`  | `NetPayload`  | `daddr, saddr, dport, sport, proto` (planned) |
+
+One `Event` type ⇒ one ring buffer ⇒ one userspace decode path (`Event::from_bytes`,
+an unaligned read into an owned value). `kind` is a plain `u8` + consts, not a
+Rust enum, because it's transmuted from kernel bytes (an out-of-range enum
+discriminant would be UB).
+
+> **Kernel-writer contract:** the ring-buffer slot is uninitialized memory. Each
+> sensor builds a **zeroed** `Event` on the stack before filling it — otherwise
+> the uninitialized tail of the union (the bytes past a small variant) would leak
+> kernel memory to userspace. `Event` is ~304 B, within the 512 B BPF stack, so
+> the path/filename is read straight into the payload field rather than via a
+> second buffer.
+
+**Shared maps** (declared in `main.rs`, used by every module):
 
 | Map | Type | Purpose |
 |-----|------|---------|
+| `EVENTS` | `RingBuf` (256 KiB) | all sensor events → userspace |
 | `PID_PARENT` | `HashMap<u32,u32>` (8192) | child pid → parent pid, for ppid lookup |
 | `MUTED` | `LruHashMap<u32,u8>` (1024) | pids whose events are suppressed (noise) |
 
-**Event flow**
+---
 
-- `sched_process_fork` fires → store `child→parent` in `PID_PARENT`. If the
-  parent is in `MUTED`, mute the child too (taints the whole subtree).
-- `sched_process_exec` fires (once, on a *successful* exec) → look up `ppid`; if
-  pid is muted, drop. Otherwise read the exec path; if it's the known-noisy
-  widget, mute it and drop; else log the enriched event.
+## 4. The sensors
 
-The exec path is a `__data_loc char[]` descriptor at offset 8 in the record: the
-low 16 bits are the byte offset (within the record) to the inline string. We
-read that string from the tracepoint (kernel) buffer with
-`bpf_probe_read_kernel_str_bytes` into a 64-byte stack buffer.
+### Process (`process.rs`)
+
+| Program | Tracepoint | Role |
+|---------|-----------|------|
+| `process_monitor` | `sched/sched_process_exec` | Emit `EVENT_EXEC` for each successful exec |
+| `sched_fork` | `sched/sched_process_fork` | Record `child → parent` pid; propagate mute |
+
+- `sched_process_fork` → store `child→parent` in `PID_PARENT`. If the parent is
+  in `MUTED`, mute the child too (taints the whole subtree).
+- `sched_process_exec` fires **once, on a successful exec** → look up `ppid`; if
+  the pid is muted, drop; if the path is the known-noisy widget, mute and drop;
+  else emit. The exec path is a `__data_loc` descriptor (offset 8): low 16 bits
+  are the byte offset to the inline string, read from the kernel buffer with
+  `bpf_probe_read_kernel_str_bytes`.
 
 > **Why `sched_process_exec`, not `sys_enter_execve`?** The syscall-entry
 > tracepoint fires on *every* `execve` attempt, including the failed PATH probes
-> the loader makes while resolving a bare command name — e.g. launching
-> `exo-open` logged 7 events (`~/.cargo/bin/exo-open`, `/usr/local/sbin/…`, …)
-> for one real launch, all sharing a pid. `sched_process_exec` fires **once per
-> successful exec** and reports the final resolved binary, collapsing those to a
-> single event. Trade-off: failed execs are no longer visible from this hook
-> (they'd need `sys_exit_execve` with a non-zero return, a separate signal).
+> the loader makes resolving a bare command name — launching `exo-open` logged 7
+> events (one per `$PATH` dir, all sharing a pid) for one real launch.
+> `sched_process_exec` fires once per successful exec with the final resolved
+> binary. Trade-off: failed execs are invisible from this hook (they'd need
+> `sys_exit_execve` with a non-zero return).
+
+### File (`file.rs`)
+
+| Program | Tracepoint | Role |
+|---------|-----------|------|
+| `file_monitor` | `syscalls/sys_enter_openat` | Emit `EVENT_FILE` for write-intent opens |
+
+`openat` is a firehose (every library load, config read, `.so` mmap), so the
+sensor filters **kernel-side** on two axes before emitting:
+
+1. **Write intent** — drop read-only opens; keep write/read-write mode, `O_CREAT`,
+   `O_TRUNC`, `O_APPEND`. This is the security-relevant slice (dropped payloads,
+   tampered configs, staged binaries) and cuts volume enormously.
+2. **Pseudo-filesystem paths** — drop `/dev/*` (**except `/dev/shm/`**, a real
+   payload-staging spot), `/proc/`, `/sys/`. Interactive shells hammer
+   `/dev/null` with write flags on every prompt; this kills that flood.
+
+`openat`'s `filename` is a **userspace** pointer (arg index 1 ⇒ record offset 24),
+read with `bpf_probe_read_user_str_bytes` — unlike the exec path's kernel
+`__data_loc`. Args are read with `ctx.read_at` (a `bpf_probe_read` under the
+hood) rather than a direct ctx-struct deref, which keeps clear of the
+attach-time `EACCES` (see below).
+
+> **Known limitation:** the captured path is the raw `openat` argument, so a
+> relative path (e.g. `file.py`) is stored as-is, not resolved against the
+> process CWD. Absolute-path resolution needs VFS-layer probing (`d_path`) — a
+> later refinement.
 
 ---
 
-## 4. Noise handling
+## 5. Noise handling
 
-The XFCE panel's VPN-IP widget
-(`/usr/share/kali-themes/xfce4-panel-genmon-vpnip.sh`) polled every second and
-spawned `ip`/`cut`/`head`/`grep`, flooding the logs. Handled two ways:
-
-1. **Throttle the source** — `~/.config/xfce4/panel/genmon-15.rc`
-   `UpdatePeriod` raised `1000` → `60000` ms (then `xfce4-panel -r`). Reversible.
-2. **Kernel-side subtree mute** — match the widget by path, add its pid to
-   `MUTED`, and propagate the mute to all descendants **at fork time** (see the
-   subshell bug below).
+- **Process** — the XFCE VPN-IP widget
+  (`/usr/share/kali-themes/xfce4-panel-genmon-vpnip.sh`) polled every second,
+  spawning `ip`/`cut`/`head`/`grep`. Matched by path, its pid added to `MUTED`,
+  and the mute propagated to all descendants **at fork time** (subshells fork but
+  never execve, so exec-time muting misses them). Optionally also throttled at
+  source via `~/.config/xfce4/panel/genmon-15.rc` `UpdatePeriod 1000→60000`.
+- **File** — write-intent + pseudo-fs filtering (§4).
 
 ---
 
-## 5. Problems hit & fixes (the useful part)
+## 6. Problems hit & fixes (the useful part)
 
 | Symptom | Root cause | Fix |
 |---------|-----------|-----|
 | `cargo: command not found` under sudo | `sudo` resets `PATH` even with `-E` | run as `sudo -E env PATH="$PATH" cargo run` |
 | No output at all | `env_logger` silent unless `RUST_LOG` set; aya-log routes through `log` | run with `RUST_LOG=info`. (`trace_pipe` is unrelated — aya-log uses a ring buffer, not ftrace) |
-| Only "execve called", no path | template logic was a stub | read `filename` arg via `bpf_probe_read_user_str_bytes` |
-| `no method as_ptr` | `EbpfContext` trait not in scope | `use aya_ebpf::EbpfContext` |
-| Verifier: `1000001 insns (limit 1000000)` | `iter().position()` over a 256-byte buffer exploded state | use the slice the helper returns; shrink buffer to 64 |
-| `bpf_link_create … Permission denied (EACCES)` on fork attach | program read tracepoint context **past the record size**; kernel check `max_ctx_offset > off` rejects at attach | fix struct to the real kernel-6.19 layout |
+| Verifier: `1000001 insns (limit 1000000)` | `iter().position()` over a 256-byte buffer exploded state | use the slice the helper returns; don't hand-scan long buffers in-kernel |
+| `bpf_link_create … Permission denied (EACCES)` on attach | program read tracepoint context **past the record size**; kernel check `max_ctx_offset > off` rejects at attach | match the `#[repr(C)]` struct to the real kernel layout, or read args via `ctx.read_at` (probe read) instead of a direct deref |
 | Wrong fork offsets | 6.19 uses `__data_loc char[]` (4-byte descriptors), not inline `char[16]`; record is 24 B, not 48 B | `parent_pid` @12, `child_pid` @20 |
-| Filter let `ip`/`cut`/… through | bash forks **subshells that never execve**, so exec-time mute never tagged them | propagate mute in the **fork** tracepoint, not just on exec |
+| Process filter let `ip`/`cut`/… through | bash forks **subshells that never execve**, so exec-time mute never tagged them | propagate mute in the **fork** tracepoint, not just on exec |
 | `pwd` not recorded | `pwd` is a shell **builtin** — no execve happens | expected; use `command pwd` / `/usr/bin/pwd` to force an exec |
-| One launch logged 7× (`exo-open` at 7 different paths, same pid) | `sys_enter_execve` fires on every PATH-probe attempt, not just the one that succeeds | hook `sched/sched_process_exec` instead — fires once per successful exec with the resolved path |
+| One launch logged 7× (`exo-open` at 7 paths, same pid) | `sys_enter_execve` fires on every PATH-probe attempt | hook `sched/sched_process_exec` — once per successful exec, resolved path |
+| File sensor flooded by `/dev/null` (hundreds/sec from `zsh`) | shells open `/dev/null` with write flags every prompt; write-intent filter alone passes them | drop pseudo-fs paths kernel-side (`/dev/*` except `/dev/shm/`, `/proc/`, `/sys/`) |
+| Union tail could leak kernel memory | ring-buffer slot is uninitialized; writing a small variant leaves the rest undefined | zero the whole `Event` (`mem::zeroed`) before filling |
 
 ### Key kernel insight
-A tracepoint BPF program is rejected **at attach time** (not load) with
-`EACCES` if it reads the context buffer beyond that specific tracepoint's record
-size. Always match the `#[repr(C)]` struct to the live
-`/sys/kernel/tracing/events/<cat>/<name>/format`.
+A tracepoint BPF program is rejected **at attach time** (not load) with `EACCES`
+if it reads the context buffer beyond that tracepoint's record size. Either match
+the `#[repr(C)]` struct to the live
+`/sys/kernel/tracing/events/<cat>/<name>/format`, or read fields with
+`ctx.read_at` (which goes through `bpf_probe_read` and sidesteps the direct-deref
+bound check).
 
-`sched_process_fork` format on this kernel:
+Live formats on this kernel:
 ```
-offset 0  common header (8)
-offset 8  __data_loc parent_comm (4)
-offset 12 parent_pid (4)
-offset 16 __data_loc child_comm (4)
-offset 20 child_pid (4)   -> total record = 24 bytes
-```
+sched_process_fork                       sched_process_exec
+  0  common header (8)                     0  common header (8)
+  8  __data_loc parent_comm (4)            8  __data_loc filename (4)  low16 = str off
+ 12  parent_pid (4)                       12  pid (4)
+ 16  __data_loc child_comm (4)            16  old_pid (4)   -> record = 20 B
+ 20  child_pid (4)   -> record = 24 B
 
-`sched_process_exec` format on this kernel:
-```
-offset 0  common header (8)
-offset 8  __data_loc filename (4)   -> low 16 bits = byte offset to inline string
-offset 12 pid (4)
-offset 16 old_pid (4)     -> total record = 20 bytes
+sys_enter_openat  (syscall-enter: 8-byte arg slots from offset 16)
+  8  __syscall_nr (4)
+ 16  dfd            24  filename (ptr)     32  flags     40  mode
 ```
 
 ---
 
-## 6. Build & run
+## 7. Build & run
 
 ```bash
-cd process_monitor
+cd sensors
 cargo build                                   # builds eBPF object + userspace (no root)
 RUST_LOG=info sudo -E env PATH="$PATH" cargo run
 ```
 
-Generate events in a second terminal (`ls`, `curl google.com`). Stop with Ctrl-C.
+Generate events in a second terminal (`ls`; `echo hi > /tmp/x`; `curl google.com`).
+Stop with Ctrl-C. Events are JSON on **stdout**; status/errors on **stderr** (so
+`… | jq .` works cleanly).
 
 Sample output:
-```
-exec pid=70169 ppid=2215 uid=1000 path=/usr/bin/ls
-exec pid=70312 ppid=2215 uid=1000 path=/usr/bin/curl
+```json
+{"ts":12697151771476,"type":"exec","pid":112415,"ppid":17781,"uid":1000,"comm":"ls","path":"/usr/bin/ls"}
+{"ts":12724783528293,"type":"file","pid":6570,"ppid":0,"uid":1000,"comm":"firefox","path":"/tmp/x","flags":577}
 ```
 
-### Inspect the loaded program
+`ppid=0` for a process that already existed before the sensor started (no fork
+record); lineage is populated only for processes spawned after attach.
+
+### Inspect the loaded programs
 ```bash
-sudo bpftool prog show          # tracepoint progs named process_monitor / sched_fork
-sudo bpftool link show          # links to sched/sched_process_exec & sched/sched_process_fork
-sudo bpftool map show           # PID_PARENT (hash) and MUTED (lru_hash)
+sudo bpftool prog show     # tracepoint progs: process_monitor / sched_fork / file_monitor
+sudo bpftool link show     # links to sched_process_exec, sched_process_fork, sys_enter_openat
+sudo bpftool map show      # EVENTS (ringbuf), PID_PARENT (hash), MUTED (lru_hash)
 ```
 
 ---
 
-## 7. Status & next steps
+## 8. Status & next steps
 
-**Working:** two-tracepoint sensor, correct ppid lineage, kernel-side noise
-filtering, verifier-clean on kernel 6.19. Committed as Phase 1.
+**Working:** process + file sensors in one BPF object, unified `Event` schema,
+ring-buffer transport, JSON-normalizing loader, per-sensor kernel-side noise
+filtering, verifier-clean on kernel 6.19.
 
-**Not done yet (next milestones):**
-1. Detection rules — suspicious lineage (build tool → `curl`/`wget`/shell),
-   exec from `/tmp` or `/dev/shm`, unexpected `uid=0`.
-2. Structured events — replace `info!` logging with a perf/ring-buffer channel
-   to the userspace `collector`.
-3. File and network monitors (the other two `ebpf/` subdirs).
+**Not done yet:**
+1. **Network sensor** (`network.rs`) — `tcp_connect` via kprobe/fentry reading
+   `struct sock` → `EVENT_NET`. Completes the sensor triad.
+2. **Correlation + detection** — suspicious lineage (build tool → downloader →
+   shell), exec/write in `/tmp` or `/dev/shm`, unexpected `uid=0`, exec-then-
+   connect chains. This is where the unified stream pays off.
+3. **Path resolution** for the file sensor (absolute paths via `d_path`).
+4. **Persistence/collector** — the JSON stream currently prints to stdout.

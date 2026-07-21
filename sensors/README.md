@@ -1,4 +1,10 @@
-# process_monitor
+# sensors
+
+SecRisk eBPF sensor suite (process + file, network planned). Loading the sensors
+needs root; run with `RUST_LOG=info sudo -E env PATH="$PATH" cargo run`. Events
+are emitted as JSON on stdout. See
+[`../docs/ebpf/sensors_design.md`](../docs/ebpf/sensors_design.md) for the full
+design and build notes.
 
 ## Prerequisites
 
@@ -24,16 +30,16 @@ program.
 Cross compilation should work on both Intel and Apple Silicon Macs.
 
 ```shell
-cargo build --package process_monitor --release \
+cargo build --package sensors --release \
   --target=${ARCH}-unknown-linux-musl \
   --config=target.${ARCH}-unknown-linux-musl.linker=\"rust-lld\"
 ```
-The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/process_monitor` can be
+The cross-compiled program `target/${ARCH}-unknown-linux-musl/release/sensors` can be
 copied to a Linux server or VM and run there.
 
 ## License
 
-With the exception of eBPF code, process_monitor is distributed under the terms
+With the exception of eBPF code, sensors is distributed under the terms
 of either the [MIT license] or the [Apache License] (version 2.0), at your
 option.
 

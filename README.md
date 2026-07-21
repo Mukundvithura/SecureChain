@@ -32,7 +32,7 @@ Motivated by real-world incidents such as SolarWinds, Codecov, and XZ Utils, thi
 │               BPF Maps / Ring Buffer        │
 └───────────────────┬─────────────────────────┘
                     ↓
-         Userspace Collector (Go)
+       Userspace Loader (Rust / Aya)
                     ↓
        Behavioral Correlation Engine
                     ↓
@@ -53,13 +53,13 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 
 | Layer                  | Technology                        |
 |------------------------|-----------------------------------|
-| Kernel Instrumentation | eBPF (libbpf / CO-RE)             |
-| eBPF Language          | C (BPF programs)                  |
-| Userspace Collector    | Go                                |
-| Event Storage          | PostgreSQL                        |
-| Behavioral Engine      | Go                                |
-| Dashboard              | Grafana / custom web UI           |
-| Alerting               | Slack Webhook                     |
+| Kernel Instrumentation | eBPF (CO-RE)                      |
+| eBPF + userspace       | Rust ([Aya](https://github.com/aya-rs/aya)) |
+| Event transport        | BPF ring buffer → unified `Event` schema |
+| Behavioral Engine      | Rust *(planned)*                  |
+| Event Storage          | PostgreSQL *(planned)*            |
+| Dashboard              | custom web UI *(planned)*         |
+| Alerting               | Slack Webhook *(planned)*         |
 | Deployment             | AWS EC2 (prototype), Kubernetes (future) |
 | Threat Mapping         | MITRE ATT&CK                      |
 
@@ -69,10 +69,10 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 
 | Phase | Focus                              | Status      |
 |-------|------------------------------------|-------------|
-| 0     | Research, architecture, feasibility | In Progress |
-| 1     | eBPF process monitor, event collection, storage | Planned |
-| 2     | File + network monitoring, correlation engine | Planned |
-| 3     | Risk scoring, dashboard, alerting  | Planned     |
+| 0     | Research, architecture, feasibility | Done |
+| 1     | eBPF process sensor (exec + fork lineage), noise filtering | Done |
+| 2     | Unified event schema + ring-buffer transport; file sensor; network sensor | In Progress (network pending) |
+| 3     | Correlation engine, risk scoring, alerting | Planned |
 | 4     | Evaluation, benchmarking, documentation | Planned |
 
 See [`docs/implementation_plan.md`](docs/implementation_plan.md) for detailed phase breakdown with deliverables and milestones.
@@ -90,21 +90,25 @@ SecRisk/
 │   ├── literature_survey.md       # Review of existing tools and research gaps
 │   ├── risk_analysis.md           # Technical and operational risks with mitigations
 │   ├── implementation_plan.md     # Phased development roadmap
+│   ├── ebpf/
+│   │   └── sensors_design.md      # Sensor suite design & build notes (start here)
 │   └── architecture/
 │       ├── core_design.md         # eBPF engine design and scoring framework
 │       ├── system_architecture.md # Full system layer architecture
 │       └── aws_architecture.md    # Cloud deployment architecture
 │
-├── ebpf/
-│   ├── process_monitor/           # execve() hook — process execution telemetry
-│   ├── file_monitor/              # openat() hook — file access telemetry
-│   └── network_monitor/           # tcp_connect() hook — network telemetry
+├── sensors/                       # Rust/Aya workspace — the implemented sensor suite
+│   ├── sensors/                   #   userspace loader (drains ring buffer → JSON)
+│   ├── sensors-common/            #   shared Event schema
+│   └── sensors-ebpf/              #   eBPF program: process.rs, file.rs (network.rs planned)
 │
-├── collector/                     # Userspace event receiver and normalizer
+├── detection_engine/              # Behavioral correlation and risk scoring (planned)
 │
-├── detection_engine/              # Behavioral correlation and risk scoring
-│
-├── dashboard/                     # Visualization and alerting UI
+├── dashboard/                     # Visualization and alerting UI (planned)
 │
 └── README.md
 ```
+
+> The top-level `ebpf/`, `collector/` directories are legacy stubs from an
+> earlier C/Go design; the working implementation lives entirely in `sensors/`
+> (Rust/Aya). See [`docs/ebpf/sensors_design.md`](docs/ebpf/sensors_design.md).
