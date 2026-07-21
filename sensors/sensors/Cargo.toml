@@ -1,12 +1,12 @@
 [package]
-name = "process_monitor"
+name = "sensors"
 version = "0.1.0"
 edition.workspace = true
 
 license.workspace = true
 
 [dependencies]
-process_monitor-common = { path = "../process_monitor-common", features = ["user"] }
+sensors-common = { path = "../sensors-common", features = ["user"] }
 
 anyhow = { workspace = true, default-features = true }
 aya = { workspace = true }
@@ -37,8 +37,8 @@ cargo_metadata = { workspace = true }
 # Finally note that *any* usage of `artifact = ...` in *any* Cargo.toml in the workspace breaks
 # workflows with stable cargo; stable cargo outright refuses to load manifests that use unstable
 # features.
-process_monitor-ebpf = { path = "../process_monitor-ebpf" }
+sensors-ebpf = { path = "../sensors-ebpf" }
 
 [[bin]]
-name = "process_monitor"
+name = "sensors"
 path = "src/main.rs"

@@ -386,40 +386,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "process_monitor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aya",
- "aya-build",
- "aya-log",
- "cargo_metadata",
- "env_logger",
- "libc",
- "log",
- "process_monitor-common",
- "process_monitor-ebpf",
- "tokio",
-]
-
-[[package]]
-name = "process_monitor-common"
-version = "0.1.0"
-dependencies = [
- "aya",
-]
-
-[[package]]
-name = "process_monitor-ebpf"
-version = "0.1.0"
-dependencies = [
- "aya-ebpf",
- "aya-log-ebpf",
- "process_monitor-common",
- "which 6.0.3",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -470,6 +436,40 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 dependencies = [
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "sensors"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "aya-build",
+ "aya-log",
+ "cargo_metadata",
+ "env_logger",
+ "libc",
+ "log",
+ "sensors-common",
+ "sensors-ebpf",
+ "tokio",
+]
+
+[[package]]
+name = "sensors-common"
+version = "0.1.0"
+dependencies = [
+ "aya",
+]
+
+[[package]]
+name = "sensors-ebpf"
+version = "0.1.0"
+dependencies = [
+ "aya-ebpf",
+ "aya-log-ebpf",
+ "sensors-common",
+ "which 6.0.3",
 ]
 
 [[package]]

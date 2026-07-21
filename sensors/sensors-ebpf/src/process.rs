@@ -1,28 +1,11 @@
-#![no_std]
-#![no_main]
+//! Process sensor: successful execs (`EVENT_EXEC`) plus the fork tracepoint that
+//! maintains the shared `PID_PARENT` lineage map and propagates muting.
 
-use aya_ebpf::{
-    EbpfContext, helpers,
-    macros::{map, tracepoint},
-    maps::{HashMap, LruHashMap, RingBuf},
-    programs::TracePointContext,
-};
+use aya_ebpf::{EbpfContext, helpers, macros::tracepoint, programs::TracePointContext};
 use aya_log_ebpf::info;
-use process_monitor_common::{EVENT_EXEC, Event};
+use sensors_common::{EVENT_EXEC, Event};
 
-// Single ring buffer carrying every sensor's events to userspace. 256 KiB
-// (power-of-2 multiple of the page size, as the kernel requires).
-#[map]
-static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
-
-// child_pid -> parent_pid, populated by the sched_process_fork tracepoint.
-#[map]
-static PID_PARENT: HashMap<u32, u32> = HashMap::with_max_entries(8192, 0);
-
-// pids whose execve events we suppress: the noisy vpnip panel widget and any
-// process descended from it. LRU so old entries self-evict (no leak).
-#[map]
-static MUTED: LruHashMap<u32, u8> = LruHashMap::with_max_entries(1024, 0);
+use crate::{EVENTS, MUTED, PID_PARENT};
 
 // Known-benign periodic widget that polls every second and spawns ip/cut/head/grep.
 const VPNIP: &[u8] = b"/usr/share/kali-themes/xfce4-panel-genmon-vpnip.sh";
@@ -146,13 +129,3 @@ fn try_fork(ctx: TracePointContext) -> Result<u32, u32> {
     }
     Ok(0)
 }
-
-#[cfg(not(test))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {}
-}
-
-#[unsafe(link_section = "license")]
-#[unsafe(no_mangle)]
-static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";

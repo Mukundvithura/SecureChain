@@ -2,7 +2,7 @@ use aya::maps::RingBuf;
 use aya::programs::TracePoint;
 #[rustfmt::skip]
 use log::{debug, warn};
-use process_monitor_common::{EVENT_EXEC, Event, cstr};
+use sensors_common::{EVENT_EXEC, EVENT_FILE, Event, cstr};
 use tokio::signal;
 
 #[tokio::main]
@@ -26,7 +26,7 @@ async fn main() -> anyhow::Result<()> {
     // reach for `Bpf::load_file` instead.
     let mut ebpf = aya::Ebpf::load(aya::include_bytes_aligned!(concat!(
         env!("OUT_DIR"),
-        "/process_monitor"
+        "/sensors"
     )))?;
     match aya_log::EbpfLogger::init(&mut ebpf) {
         Err(e) => {
@@ -53,6 +53,10 @@ async fn main() -> anyhow::Result<()> {
     let program: &mut TracePoint = ebpf.program_mut("process_monitor").unwrap().try_into()?;
     program.load()?;
     program.attach("sched", "sched_process_exec")?;
+
+    let file_prog: &mut TracePoint = ebpf.program_mut("file_monitor").unwrap().try_into()?;
+    file_prog.load()?;
+    file_prog.attach("syscalls", "sys_enter_openat")?;
 
     // Drain the shared ring buffer: decode each sample into an `Event` and emit
     // it as one normalized JSON line. The BPF ring buffer fd is epoll-able, so
@@ -103,7 +107,22 @@ fn emit(event: &Event) {
                 json_str(&path),
             );
         }
-        // file / net variants land here once those sensors exist.
+        EVENT_FILE => {
+            // SAFETY: kind == EVENT_FILE guarantees the `file` union variant.
+            let file = unsafe { &event.payload.file };
+            let path = String::from_utf8_lossy(cstr(&file.path));
+            println!(
+                "{{\"ts\":{},\"type\":\"file\",\"pid\":{},\"ppid\":{},\"uid\":{},\"comm\":{},\"path\":{},\"flags\":{}}}",
+                h.timestamp,
+                h.pid,
+                h.ppid,
+                h.uid,
+                json_str(&comm),
+                json_str(&path),
+                file.flags,
+            );
+        }
+        // net variant lands here until that sensor exists.
         other => eprintln!("unknown event kind {other}"),
     }
 }

@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "process_monitor",
-    "process_monitor-common",
-    "process_monitor-ebpf",
+    "sensors",
+    "sensors-common",
+    "sensors-ebpf",
 ]
-default-members = ["process_monitor", "process_monitor-common"]
+default-members = ["sensors", "sensors-common"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"
@@ -30,7 +30,7 @@ log = { version = "0.4.22", default-features = false }
 tokio = { version = "1.40.0", default-features = false }
 which = { version = "6.0.0", default-features = false }
 
-[profile.release.package.process_monitor-ebpf]
+[profile.release.package.sensors-ebpf]
 debug = 2
 codegen-units = 1
 strip = false
