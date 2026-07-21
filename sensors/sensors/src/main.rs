@@ -2,7 +2,7 @@ use aya::maps::RingBuf;
 use aya::programs::TracePoint;
 #[rustfmt::skip]
 use log::{debug, warn};
-use sensors_common::{EVENT_EXEC, EVENT_FILE, Event, cstr};
+use sensors_common::{EVENT_EXEC, EVENT_FILE, EVENT_NET, Event, cstr};
 use tokio::signal;
 
 #[tokio::main]
@@ -57,6 +57,10 @@ async fn main() -> anyhow::Result<()> {
     let file_prog: &mut TracePoint = ebpf.program_mut("file_monitor").unwrap().try_into()?;
     file_prog.load()?;
     file_prog.attach("syscalls", "sys_enter_openat")?;
+
+    let net_prog: &mut TracePoint = ebpf.program_mut("network_monitor").unwrap().try_into()?;
+    net_prog.load()?;
+    net_prog.attach("sock", "inet_sock_set_state")?;
 
     // Drain the shared ring buffer: decode each sample into an `Event` and emit
     // it as one normalized JSON line. The BPF ring buffer fd is epoll-able, so
@@ -122,9 +126,32 @@ fn emit(event: &Event) {
                 file.flags,
             );
         }
-        // net variant lands here until that sensor exists.
+        EVENT_NET => {
+            // SAFETY: kind == EVENT_NET guarantees the `net` union variant.
+            let net = unsafe { &event.payload.net };
+            println!(
+                "{{\"ts\":{},\"type\":\"net\",\"pid\":{},\"ppid\":{},\"uid\":{},\"comm\":{},\"saddr\":{},\"sport\":{},\"daddr\":{},\"dport\":{},\"proto\":{}}}",
+                h.timestamp,
+                h.pid,
+                h.ppid,
+                h.uid,
+                json_str(&comm),
+                json_str(&ipv4(net.saddr)),
+                net.sport,
+                json_str(&ipv4(net.daddr)),
+                net.dport,
+                net.proto,
+            );
+        }
         other => eprintln!("unknown event kind {other}"),
     }
+}
+
+// Format a raw network-order IPv4 address (as read from the tracepoint) into a
+// dotted quad. The bytes are already in wire order, so take them as-is.
+fn ipv4(addr: u32) -> String {
+    let o = addr.to_ne_bytes();
+    format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3])
 }
 
 // A JSON string literal (quoted, with the mandatory escapes) for `s`.

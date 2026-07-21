@@ -71,7 +71,7 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 |-------|------------------------------------|-------------|
 | 0     | Research, architecture, feasibility | Done |
 | 1     | eBPF process sensor (exec + fork lineage), noise filtering | Done |
-| 2     | Unified event schema + ring-buffer transport; file sensor; network sensor | In Progress (network pending) |
+| 2     | Unified event schema + ring-buffer transport; file + network sensors | Done |
 | 3     | Correlation engine, risk scoring, alerting | Planned |
 | 4     | Evaluation, benchmarking, documentation | Planned |
 

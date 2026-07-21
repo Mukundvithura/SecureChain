@@ -10,6 +10,7 @@ use aya_ebpf::{
 // all share the maps declared below and emit into the single `EVENTS` ring
 // buffer, so userspace has one stream to drain.
 mod file;
+mod network;
 mod process;
 
 // Single ring buffer carrying every sensor's events to userspace. 256 KiB

@@ -6,8 +6,8 @@ buffer, and are drained by one userspace loader that normalizes each event to a
 JSON line. This document summarises what was built, the problems hit along the
 way, and how to run/verify it.
 
-Current sensors: **process** (exec + fork lineage) and **file** (write-intent
-opens). **Network** (`tcp_connect`) is designed but not yet built.
+Current sensors: **process** (exec + fork lineage), **file** (write-intent
+opens), and **network** (outbound TCP connect attempts).
 
 ---
 
@@ -41,7 +41,8 @@ sensors/
 │   └── src/
 │       ├── main.rs       # maps (EVENTS, PID_PARENT, MUTED) + module wiring
 │       ├── process.rs    # sched_process_exec + sched_process_fork  → EVENT_EXEC
-│       └── file.rs       # sys_enter_openat                          → EVENT_FILE
+│       ├── file.rs       # sys_enter_openat                          → EVENT_FILE
+│       └── network.rs    # inet_sock_set_state                       → EVENT_NET
 └── Cargo.toml            # workspace; aya deps point at git
 ```
 
@@ -68,7 +69,7 @@ comm`) plus a tagged `Payload` union selected by `kind`:
 |--------|---------|--------|
 | `EVENT_EXEC` | `ExecPayload` | `filename[256]` |
 | `EVENT_FILE` | `FilePayload` | `path[256]`, `flags` |
-| `EVENT_NET`  | `NetPayload`  | `daddr, saddr, dport, sport, proto` (planned) |
+| `EVENT_NET`  | `NetPayload`  | `daddr, saddr, dport, sport, proto` |
 
 One `Event` type ⇒ one ring buffer ⇒ one userspace decode path (`Event::from_bytes`,
 an unaligned read into an owned value). `kind` is a plain `u8` + consts, not a
@@ -144,6 +145,30 @@ attach-time `EACCES` (see below).
 > process CWD. Absolute-path resolution needs VFS-layer probing (`d_path`) — a
 > later refinement.
 
+### Network (`network.rs`)
+
+| Program | Tracepoint | Role |
+|---------|-----------|------|
+| `network_monitor` | `sock/inet_sock_set_state` | Emit `EVENT_NET` for outbound TCP connects |
+
+`inet_sock_set_state` fires on every TCP state change; the transition **into
+`TCP_SYN_SENT`** is a process actively initiating an outbound connection — the
+supply-chain signal (a build tool or dropped binary phoning out). We filter to
+`newstate == TCP_SYN_SENT`, `family == AF_INET`, `protocol == IPPROTO_TCP` (v4/TCP
+for now) and fill `daddr/saddr/dport/sport/proto`.
+
+Using this **stable, fixed-format tracepoint** avoids the CO-RE/BTF `struct sock`
+chasing a `tcp_connect` kprobe would need. In the record, ports are already host
+byte order (the kernel `ntohs`-es them) and addresses are raw network-order bytes
+(transported verbatim, formatted dotted-quad in userspace).
+
+> **Known limitation:** `sport` reads as `0`. At the `SYN_SENT` transition the
+> kernel hasn't assigned the ephemeral source port yet (that happens later in
+> `inet_hash_connect`). The **destination** (`daddr:dport`) — what matters for
+> "where is this phoning home" — is correct. A real source port would require
+> reading `struct sock` via CO-RE (avoided) or a softirq-context later state
+> (wrong pid).
+
 ---
 
 ## 5. Noise handling
@@ -172,6 +197,7 @@ attach-time `EACCES` (see below).
 | One launch logged 7× (`exo-open` at 7 paths, same pid) | `sys_enter_execve` fires on every PATH-probe attempt | hook `sched/sched_process_exec` — once per successful exec, resolved path |
 | File sensor flooded by `/dev/null` (hundreds/sec from `zsh`) | shells open `/dev/null` with write flags every prompt; write-intent filter alone passes them | drop pseudo-fs paths kernel-side (`/dev/*` except `/dev/shm/`, `/proc/`, `/sys/`) |
 | Union tail could leak kernel memory | ring-buffer slot is uninitialized; writing a small variant leaves the rest undefined | zero the whole `Event` (`mem::zeroed`) before filling |
+| Net events show `sport=0` | at the `SYN_SENT` transition the ephemeral source port isn't assigned yet (happens later in `inet_hash_connect`) | accepted — destination (`daddr:dport`) is what matters and is correct |
 
 ### Key kernel insight
 A tracepoint BPF program is rejected **at attach time** (not load) with `EACCES`
@@ -193,6 +219,10 @@ sched_process_fork                       sched_process_exec
 sys_enter_openat  (syscall-enter: 8-byte arg slots from offset 16)
   8  __syscall_nr (4)
  16  dfd            24  filename (ptr)     32  flags     40  mode
+
+inet_sock_set_state  (all fields inline, not __data_loc)
+ 16  oldstate(i32)  20  newstate(i32)  24  sport(u16, host order)  26  dport(u16)
+ 28  family(u16)    30  protocol(u16)  32  saddr[4]  36  daddr[4]  -> record = 72 B
 ```
 
 ---
@@ -209,10 +239,11 @@ Generate events in a second terminal (`ls`; `echo hi > /tmp/x`; `curl google.com
 Stop with Ctrl-C. Events are JSON on **stdout**; status/errors on **stderr** (so
 `… | jq .` works cleanly).
 
-Sample output:
+Sample output — note the exec→connect chain on one pid (the correlation payoff):
 ```json
-{"ts":12697151771476,"type":"exec","pid":112415,"ppid":17781,"uid":1000,"comm":"ls","path":"/usr/bin/ls"}
-{"ts":12724783528293,"type":"file","pid":6570,"ppid":0,"uid":1000,"comm":"firefox","path":"/tmp/x","flags":577}
+{"ts":14817878347036,"type":"exec","pid":132429,"ppid":17781,"uid":1000,"comm":"curl","path":"/usr/bin/curl"}
+{"ts":14817970034810,"type":"net","pid":132429,"ppid":17781,"uid":1000,"comm":"curl","saddr":"192.168.159.128","sport":0,"daddr":"142.250.67.46","dport":80,"proto":6}
+{"ts":14818181744654,"type":"file","pid":17781,"ppid":0,"uid":1000,"comm":"zsh","path":"/tmp/x","flags":833}
 ```
 
 `ppid=0` for a process that already existed before the sensor started (no fork
@@ -220,8 +251,8 @@ record); lineage is populated only for processes spawned after attach.
 
 ### Inspect the loaded programs
 ```bash
-sudo bpftool prog show     # tracepoint progs: process_monitor / sched_fork / file_monitor
-sudo bpftool link show     # links to sched_process_exec, sched_process_fork, sys_enter_openat
+sudo bpftool prog show     # progs: process_monitor / sched_fork / file_monitor / network_monitor
+sudo bpftool link show     # links to sched_process_exec, sched_process_fork, sys_enter_openat, inet_sock_set_state
 sudo bpftool map show      # EVENTS (ringbuf), PID_PARENT (hash), MUTED (lru_hash)
 ```
 
@@ -229,15 +260,16 @@ sudo bpftool map show      # EVENTS (ringbuf), PID_PARENT (hash), MUTED (lru_has
 
 ## 8. Status & next steps
 
-**Working:** process + file sensors in one BPF object, unified `Event` schema,
-ring-buffer transport, JSON-normalizing loader, per-sensor kernel-side noise
-filtering, verifier-clean on kernel 6.19.
+**Working:** the full sensor triad — process + file + network — in one BPF
+object, unified `Event` schema, ring-buffer transport, JSON-normalizing loader,
+per-sensor kernel-side noise filtering, verifier-clean on kernel 6.19. Lineage
+(`pid`/`ppid`) already links events across sensors (e.g. exec→connect on one pid).
 
 **Not done yet:**
-1. **Network sensor** (`network.rs`) — `tcp_connect` via kprobe/fentry reading
-   `struct sock` → `EVENT_NET`. Completes the sensor triad.
-2. **Correlation + detection** — suspicious lineage (build tool → downloader →
+1. **Correlation + detection** — suspicious lineage (build tool → downloader →
    shell), exec/write in `/tmp` or `/dev/shm`, unexpected `uid=0`, exec-then-
-   connect chains. This is where the unified stream pays off.
-3. **Path resolution** for the file sensor (absolute paths via `d_path`).
+   connect chains. This is where the unified stream pays off, and the next
+   milestone.
+2. **Path resolution** for the file sensor (absolute paths via `d_path`).
+3. **Real source port** for the network sensor (currently `sport=0`).
 4. **Persistence/collector** — the JSON stream currently prints to stdout.
