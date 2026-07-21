@@ -4,10 +4,16 @@
 use aya_ebpf::{
     EbpfContext, helpers,
     macros::{map, tracepoint},
-    maps::{HashMap, LruHashMap},
+    maps::{HashMap, LruHashMap, RingBuf},
     programs::TracePointContext,
 };
 use aya_log_ebpf::info;
+use process_monitor_common::{EVENT_EXEC, Event};
+
+// Single ring buffer carrying every sensor's events to userspace. 256 KiB
+// (power-of-2 multiple of the page size, as the kernel requires).
+#[map]
+static EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0);
 
 // child_pid -> parent_pid, populated by the sched_process_fork tracepoint.
 #[map]
@@ -80,8 +86,24 @@ fn try_exec(ctx: TracePointContext) -> Result<u32, u32> {
     let str_off = (desc & 0xffff) as usize;
     let src = (ctx.as_ptr() as usize + str_off) as *const u8;
 
-    let mut buf = [0u8; 64];
-    let filename = match unsafe { helpers::bpf_probe_read_kernel_str_bytes(src, &mut buf) } {
+    // Build a fully-zeroed Event on the stack, then read the exec path straight
+    // into its filename field. Zeroing first satisfies the schema's kernel-writer
+    // contract (no uninitialized union tail leaks to userspace); reading in place
+    // avoids a second 256-byte buffer — Event alone is ~304 B against a 512 B
+    // BPF stack.
+    let mut event: Event = unsafe { core::mem::zeroed() };
+    event.header.timestamp = unsafe { helpers::bpf_ktime_get_ns() };
+    event.header.pid = pid;
+    event.header.ppid = ppid;
+    event.header.uid = uid;
+    event.header.kind = EVENT_EXEC;
+    if let Ok(comm) = helpers::bpf_get_current_comm() {
+        event.header.comm = comm;
+    }
+
+    let filename = match unsafe {
+        helpers::bpf_probe_read_kernel_str_bytes(src, &mut event.payload.exec.filename)
+    } {
         Ok(f) => f,
         Err(_) => {
             info!(&ctx, "exec pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid);
@@ -95,14 +117,11 @@ fn try_exec(ctx: TracePointContext) -> Result<u32, u32> {
         return Ok(0);
     }
 
-    info!(
-        &ctx,
-        "exec pid={} ppid={} uid={} path={}",
-        pid,
-        ppid,
-        uid,
-        unsafe { core::str::from_utf8_unchecked(filename) }
-    );
+    // Emit into the ring buffer; if it's full, drop rather than block.
+    if let Some(mut entry) = EVENTS.reserve::<Event>(0) {
+        entry.write(event);
+        entry.submit(0);
+    }
     Ok(0)
 }
 
