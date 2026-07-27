@@ -1,14 +1,19 @@
-//! File sensor: file opens with write intent (`EVENT_FILE`), hooked to
+//! File sensor: file opens worth reviewing (`EVENT_FILE`), hooked to
 //! `syscalls/sys_enter_openat`.
 //!
 //! `openat` is a firehose — every library load, config read and `.so` mmap goes
-//! through it — so emitting every call would drown the other sensors. We filter
-//! to **write-intent** opens (write/read-write mode, create, truncate or
-//! append), which is both far lower volume and the security-relevant slice:
-//! dropped payloads, tampered configs, staged binaries.
+//! through it — so emitting every call would drown the other sensors. We emit
+//! two slices and drop the rest:
+//!
+//! 1. **Write-intent** opens (write/read-write mode, create, truncate, append) —
+//!    dropped payloads, tampered configs, staged binaries.
+//! 2. **Secret reads** — a *read* of a watchlisted sensitive path (SSH/cloud
+//!    keys, `.env`, credential/token files). Reads are otherwise dropped, so
+//!    without this a process could exfiltrate `~/.ssh/id_rsa` or `credentials`
+//!    completely unseen — the archetypal supply-chain credential theft.
 
 use aya_ebpf::{helpers, macros::tracepoint, programs::TracePointContext};
-use sensors_common::{EVENT_FILE, Event};
+use sensors_common::{EVENT_FILE, Event, FILE_SECRET_READ, FILE_WRITE};
 
 use crate::{EVENTS, MUTED, PID_PARENT};
 
@@ -50,6 +55,48 @@ fn is_noise_path(path: &[u8]) -> bool {
         || starts_with(path, b"/sys/")
 }
 
+#[inline(always)]
+fn ends_with(path: &[u8], suffix: &[u8]) -> bool {
+    let (pl, sl) = (path.len(), suffix.len());
+    if pl < sl {
+        return false;
+    }
+    // off + i < pl for all i < sl, so every index is in bounds — keeps the
+    // verifier happy without a dynamic-bounds scan over the whole 256-byte buf.
+    let off = pl - sl;
+    let mut i = 0;
+    while i < sl {
+        if path[off + i] != suffix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+// Watchlist of high-value secrets. Matched by filename suffix rather than
+// directory prefix because openat paths are often relative (`credentials.txt`,
+// not `/home/x/credentials.txt`) — a suffix match catches both, and is a bounded
+// per-suffix compare rather than a substring scan the verifier would reject.
+// Deliberately narrow (real secrets, low volume), not a general read monitor.
+#[inline(always)]
+fn is_secret_path(path: &[u8]) -> bool {
+    ends_with(path, b"id_rsa")
+        || ends_with(path, b"id_ed25519")
+        || ends_with(path, b"id_ecdsa")
+        || ends_with(path, b"id_dsa")
+        || ends_with(path, b".env")
+        || ends_with(path, b".npmrc")
+        || ends_with(path, b".pypirc")
+        || ends_with(path, b".netrc")
+        || ends_with(path, b".git-credentials")
+        || ends_with(path, b"credentials")
+        || ends_with(path, b"credentials.txt")
+        || ends_with(path, b".pem")
+        || ends_with(path, b".kube/config")
+        || ends_with(path, b"/environ") // /proc/<pid>/environ — env-var secret theft
+}
+
 #[tracepoint]
 pub fn file_monitor(ctx: TracePointContext) -> u32 {
     match try_open(ctx) {
@@ -72,10 +119,6 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
     }
 
     let flags = unsafe { ctx.read_at::<i64>(32) }.unwrap_or(0) as i32;
-    if !is_write(flags) {
-        return Ok(0);
-    }
-
     let filename_ptr = match unsafe { ctx.read_at::<u64>(24) } {
         Ok(p) => p as *const u8,
         Err(_) => return Ok(0),
@@ -86,6 +129,8 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
 
     // Zero first (schema kernel-writer contract: no uninitialized union tail
     // leaks to userspace), then read the path straight into the payload field.
+    // We must read the path *before* deciding whether to emit, because the
+    // secret-read check is path-based (not just flag-based like writes).
     let mut event: Event = unsafe { core::mem::zeroed() };
     event.header.timestamp = unsafe { helpers::bpf_ktime_get_ns() };
     event.header.pid = pid;
@@ -105,10 +150,21 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
         Err(_) => return Ok(0),
     };
 
-    // Drop pseudo-filesystem noise before it reaches userspace.
+    // Drop pseudo-filesystem noise before anything else.
     if is_noise_path(path) {
         return Ok(0);
     }
+
+    // Emit writes (any path) and reads of watchlisted secrets; drop the rest
+    // (the read firehose). A write to a secret path still reads as a write.
+    let reason = if is_write(flags) {
+        FILE_WRITE
+    } else if is_secret_path(path) {
+        FILE_SECRET_READ
+    } else {
+        return Ok(0);
+    };
+    event.payload.file.reason = reason;
 
     if let Some(mut entry) = EVENTS.reserve::<Event>(0) {
         entry.write(event);

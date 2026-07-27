@@ -33,6 +33,12 @@ pub const EVENT_EXEC: u8 = 0;
 pub const EVENT_FILE: u8 = 1;
 pub const EVENT_NET: u8 = 2;
 
+// `FilePayload::reason` — why the file open was emitted. A write is the common
+// case; a secret read is a read of a watchlisted sensitive path (credential/key
+// theft), which the sensor otherwise drops along with the read firehose.
+pub const FILE_WRITE: u8 = 0;
+pub const FILE_SECRET_READ: u8 = 1;
+
 /// Fields common to every event, filled the same way by every sensor.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -67,7 +73,9 @@ pub struct FilePayload {
     pub path: [u8; PATH_LEN],
     /// Open flags (`O_WRONLY`, `O_CREAT`, …).
     pub flags: i32,
-    pub _pad: [u8; 4],
+    /// One of the `FILE_*` consts: why this open was emitted (write vs secret read).
+    pub reason: u8,
+    pub _pad: [u8; 3],
 }
 
 /// `tcp_connect`: an outbound connection attempt. IPv4 for now; a `family`

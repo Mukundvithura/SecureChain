@@ -2,7 +2,7 @@ use aya::maps::RingBuf;
 use aya::programs::TracePoint;
 #[rustfmt::skip]
 use log::{debug, warn};
-use sensors_common::{EVENT_EXEC, EVENT_FILE, EVENT_NET, Event, cstr};
+use sensors_common::{EVENT_EXEC, EVENT_FILE, EVENT_NET, FILE_SECRET_READ, Event, cstr};
 use tokio::signal;
 
 #[tokio::main]
@@ -115,9 +115,15 @@ fn emit(event: &Event) {
             // SAFETY: kind == EVENT_FILE guarantees the `file` union variant.
             let file = unsafe { &event.payload.file };
             let path = String::from_utf8_lossy(cstr(&file.path));
+            let reason = if file.reason == FILE_SECRET_READ {
+                "secret_read"
+            } else {
+                "write"
+            };
             println!(
-                "{{\"ts\":{},\"type\":\"file\",\"pid\":{},\"ppid\":{},\"uid\":{},\"comm\":{},\"path\":{},\"flags\":{}}}",
+                "{{\"ts\":{},\"type\":\"file\",\"reason\":\"{}\",\"pid\":{},\"ppid\":{},\"uid\":{},\"comm\":{},\"path\":{},\"flags\":{}}}",
                 h.timestamp,
+                reason,
                 h.pid,
                 h.ppid,
                 h.uid,
