@@ -34,6 +34,9 @@ Motivated by real-world incidents such as SolarWinds, Codecov, and XZ Utils, thi
                     ↓
        Userspace Loader (Rust / Aya)
                     ↓
+    Normalization + Enrichment (wall clock,
+     /proc identity, lineage, path resolution)
+                    ↓
        Behavioral Correlation Engine
                     ↓
           Risk Scoring Engine
@@ -56,6 +59,7 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 | Kernel Instrumentation | eBPF (CO-RE)                      |
 | eBPF + userspace       | Rust ([Aya](https://github.com/aya-rs/aya)) |
 | Event transport        | BPF ring buffer → unified `Event` schema |
+| Normalization          | userspace loader: wall-clock time, `/proc` enrichment, path resolution |
 | Behavioral Engine      | Rust *(planned)*                  |
 | Event Storage          | PostgreSQL *(planned)*            |
 | Dashboard              | custom web UI *(planned)*         |
@@ -71,7 +75,7 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 |-------|------------------------------------|-------------|
 | 0     | Research, architecture, feasibility | Done |
 | 1     | eBPF process sensor (exec + fork lineage), noise filtering | Done |
-| 2     | Unified event schema + ring-buffer transport; file + network sensors | Done |
+| 2     | Unified event schema + ring-buffer transport; file + network sensors; normalization & enrichment | Done |
 | 3     | Correlation engine, risk scoring, alerting | Planned |
 | 4     | Evaluation, benchmarking, documentation | Planned |
 
@@ -98,17 +102,20 @@ SecRisk/
 │       └── aws_architecture.md    # Cloud deployment architecture
 │
 ├── sensors/                       # Rust/Aya workspace — the implemented sensor suite
-│   ├── sensors/                   #   userspace loader (drains ring buffer → JSON)
+│   ├── sensors/                   #   userspace loader + normalizer (ring buffer → enriched JSON)
 │   ├── sensors-common/            #   shared Event schema
-│   └── sensors-ebpf/              #   eBPF program: process.rs, file.rs (network.rs planned)
+│   └── sensors-ebpf/              #   eBPF program: process.rs, file.rs, network.rs
 │
 ├── detection_engine/              # Behavioral correlation and risk scoring (planned)
 │
 ├── dashboard/                     # Visualization and alerting UI (planned)
 │
+├── deployment/                    # Deploy configs — local / AWS / k8s (planned)
+│
 └── README.md
 ```
 
-> The top-level `ebpf/`, `collector/` directories are legacy stubs from an
-> earlier C/Go design; the working implementation lives entirely in `sensors/`
-> (Rust/Aya). See [`docs/ebpf/sensors_design.md`](docs/ebpf/sensors_design.md).
+> The implemented sensor suite lives entirely in `sensors/` (Rust/Aya) — start
+> at [`docs/ebpf/sensors_design.md`](docs/ebpf/sensors_design.md). The
+> `detection_engine/`, `dashboard/`, and `deployment/` directories are
+> placeholders for planned phases.

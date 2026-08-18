@@ -2,9 +2,9 @@
 
 eBPF sensor suite for the SecRisk supply-chain attack detection project. All
 sensors live in one BPF object, emit a single unified event type into one ring
-buffer, and are drained by one userspace loader that normalizes each event to a
-JSON line. This document summarises what was built, the problems hit along the
-way, and how to run/verify it.
+buffer, and are drained by one userspace loader that normalizes and enriches
+each event into a JSON line. This document summarises what was built, the
+problems hit along the way, and how to run/verify it.
 
 Current sensors: **process** (exec + fork lineage), **file** (write-intent
 opens), and **network** (outbound TCP connect attempts).
@@ -57,9 +57,16 @@ sensors/
 ## 3. Architecture: one stream
 
 ```
-sensor programs ──> EVENTS ring buffer ──> userspace loader ──> JSON line / event
-(process, file)     (256 KiB, shared)      (tokio AsyncFd)      (stdout)
+sensor programs ──> EVENTS ring buffer ──> loader ──> normalizer ──> JSON line / event
+(process, file,     (256 KiB, shared)      (tokio    (clock, /proc,   (stdout + capture)
+ network)                                  AsyncFd)   path resolution)
 ```
+
+The split is deliberate: the kernel side captures only what it can capture
+cheaply and safely, and everything that needs context — a wall clock, a process
+table, a working directory — happens in userspace, where it costs nothing in
+the verifier and nothing in the hot path of a traced syscall. §7 covers that
+half.
 
 **Shared schema** (`sensors-common`): every sensor emits the same fixed-size
 `#[repr(C)]` `Event` — a common `EventHeader` (`timestamp, pid, ppid, uid, kind,
@@ -68,7 +75,7 @@ comm`) plus a tagged `Payload` union selected by `kind`:
 | `kind` | Payload | Fields |
 |--------|---------|--------|
 | `EVENT_EXEC` | `ExecPayload` | `filename[256]` |
-| `EVENT_FILE` | `FilePayload` | `path[256]`, `flags` |
+| `EVENT_FILE` | `FilePayload` | `path[256]`, `flags`, `dfd` |
 | `EVENT_NET`  | `NetPayload`  | `daddr, saddr, dport, sport, proto` |
 
 One `Event` type ⇒ one ring buffer ⇒ one userspace decode path (`Event::from_bytes`,
@@ -140,10 +147,13 @@ read with `bpf_probe_read_user_str_bytes` — unlike the exec path's kernel
 hood) rather than a direct ctx-struct deref, which keeps clear of the
 attach-time `EACCES` (see below).
 
-> **Known limitation:** the captured path is the raw `openat` argument, so a
-> relative path (e.g. `file.py`) is stored as-is, not resolved against the
-> process CWD. Absolute-path resolution needs VFS-layer probing (`d_path`) — a
-> later refinement.
+The path is captured **raw**, exactly as the caller passed it, along with the
+directory fd from arg 0 (`dfd`, record offset 16). Resolution happens in
+userspace (§7) — a BPF program would need `d_path` on a `struct file` this
+tracepoint never hands it, while the loader gets the same answer for free by
+reading a `/proc` link. Carrying `dfd` is what makes that resolution *correct*
+rather than merely plausible: without it an open relative to some directory
+other than the cwd cannot be told apart from one relative to the cwd.
 
 ### Network (`network.rs`)
 
@@ -197,6 +207,7 @@ byte order (the kernel `ntohs`-es them) and addresses are raw network-order byte
 | One launch logged 7× (`exo-open` at 7 paths, same pid) | `sys_enter_execve` fires on every PATH-probe attempt | hook `sched/sched_process_exec` — once per successful exec, resolved path |
 | File sensor flooded by `/dev/null` (hundreds/sec from `zsh`) | shells open `/dev/null` with write flags every prompt; write-intent filter alone passes them | drop pseudo-fs paths kernel-side (`/dev/*` except `/dev/shm/`, `/proc/`, `/sys/`) |
 | Union tail could leak kernel memory | ring-buffer slot is uninitialized; writing a small variant leaves the rest undefined | zero the whole `Event` (`mem::zeroed`) before filling |
+| `BPF_PROG_LOAD … Invalid argument`, "last insn is not an exit or jmp", `processed 0 insns` | direct index (`path[off + i]`) on a **runtime-length** slice — LLVM can't prove it in bounds, emits a bounds-check panic; the panic handler diverges (`loop {}`), so that cold block ends in a `call` with no `exit`, and LLVM parked it **last** in `file_monitor` | index via `path.get(i)` — no panic path is generated at all. Verify with `llvm-objdump -d --section=tracepoint <obj>`: every program must end in `exit` or a `goto` |
 | Net events show `sport=0` | at the `SYN_SENT` transition the ephemeral source port isn't assigned yet (happens later in `inet_hash_connect`) | accepted — destination (`daddr:dport`) is what matters and is correct |
 
 ### Key kernel insight
@@ -227,7 +238,82 @@ inet_sock_set_state  (all fields inline, not __data_loc)
 
 ---
 
-## 7. Build & run
+## 7. Normalization & enrichment (`sensors/src/normalize.rs`)
+
+A raw event carries only what a BPF program can cheaply see: a boot-relative
+timestamp, a pid, a 16-byte `comm`, and whatever parent the fork map happened to
+know. That is not enough to correlate on, so the loader closes three gaps before
+anything is written out. Everything here is best-effort and **a field that
+cannot be established is omitted** — absence means unknown, so no consumer has
+to tell a real zero from a missing one.
+
+### Time
+`bpf_ktime_get_ns()` counts from boot, so a raw `ts` cannot be placed on a clock
+or joined against any other log. The loader samples `CLOCK_MONOTONIC` and
+`CLOCK_REALTIME` once at startup and carries that fixed offset, emitting `ts`
+(epoch nanoseconds) and `time` (RFC 3339, local).
+
+The offset is sampled **once**, not per event: re-sampling would track NTP steps
+and resumes more accurately, but it could also give a later event an earlier
+timestamp than one already emitted, and every consumer that sorts or windows
+events depends on `ts` being monotonic. The cost is drift from true wall-clock
+if the machine suspends mid-capture.
+
+### Identity
+On an exec the loader learns a process firsthand and records it; for anything
+that predates the capture it reads `/proc`, and caches either way (4096 pids,
+oldest evicted). That gives every event:
+
+| Field | Source |
+|-------|--------|
+| `ppid` | the event, else backfilled from `/proc/<pid>/stat` |
+| `user` | `/etc/passwd`, read once |
+| `exe` | the exec event itself, else `/proc/<pid>/exe` |
+| `cmdline` | `/proc/<pid>/cmdline`, NUL-joined, capped at 512 chars |
+| `container` | 12-hex id parsed out of `/proc/<pid>/cgroup` |
+| `ancestry` | `[{pid, comm}, …]`, walked up to 8 levels |
+
+The cache is what makes `ancestry` worth having: once `npm` has exited, `/proc`
+can no longer say that the payload descended from it, but an entry recorded at
+its exec still can. `comm` stays exactly as the kernel reported it — for a
+threaded process that is the *thread* name (`Cache2 I/O`, not `firefox`), which
+says which part of a process acted; `exe` carries the process identity.
+
+### Paths
+`openat` records its path argument verbatim, so a relative open reaches
+userspace as `credentials.txt` with no indication of where that is. The loader
+resolves it against whichever directory the syscall actually named —
+`/proc/<pid>/cwd` for `AT_FDCWD`, otherwise `/proc/<pid>/fd/<dfd>` — then cleans
+`.`/`..`/`//` **lexically**. Not `canonicalize()`: by the time the event is read
+the path may be gone, or be a symlink to somewhere other than it was. The
+original is kept as `path_raw` whenever resolution changed it.
+
+Honouring `dfd` is not a nicety. The first live capture after this landed caught
+`sudo` doing `openat(<fd for /run/sudo/ts>, "1000", …)`; resolved against the cwd
+that becomes `/home/mukunda/SecRisk/sensors/1000`, a path nothing ever opened.
+A confidently wrong absolute path is worse for a correlation rule than an
+unresolved one, so when neither link can be read — the process exited first,
+which for short-lived ones is common — the raw argument is returned unchanged
+rather than resolved against a guess. Both links are read live and never cached:
+a process can `chdir` between opens, and fd numbers are reused constantly.
+
+### Record shape
+One flat record per event: a common envelope, then the type-specific fields.
+`action` flattens the per-type reasons (`exec`, `write`, `secret_read`,
+`connect`) so a consumer can switch on one field.
+
+```
+ts  time  type  action  pid  ppid  uid  user  comm  exe  cmdline  container  ancestry  <typed>
+```
+
+`ts` is epoch **nanoseconds**, which exceeds JavaScript's safe integer range —
+fine for the Rust/Postgres path this feeds, and lossy to ~256 ns for anything
+that reads it through `JSON.parse` (the demo viewer, which only ever uses it for
+ordering and deltas).
+
+---
+
+## 8. Build & run
 
 ```bash
 cd sensors
@@ -239,15 +325,17 @@ Generate events in a second terminal (`ls`; `echo hi > /tmp/x`; `curl google.com
 Stop with Ctrl-C. Events are JSON on **stdout**; status/errors on **stderr** (so
 `… | jq .` works cleanly).
 
-Sample output — note the exec→connect chain on one pid (the correlation payoff):
+Sample output — note the exec→connect chain on one pid, and that both events
+name the same ancestry (the correlation payoff):
 ```json
-{"ts":14817878347036,"type":"exec","pid":132429,"ppid":17781,"uid":1000,"comm":"curl","path":"/usr/bin/curl"}
-{"ts":14817970034810,"type":"net","pid":132429,"ppid":17781,"uid":1000,"comm":"curl","saddr":"192.168.159.128","sport":0,"daddr":"142.250.67.46","dport":80,"proto":6}
-{"ts":14818181744654,"type":"file","pid":17781,"ppid":0,"uid":1000,"comm":"zsh","path":"/tmp/x","flags":833}
+{"ts":1787047040487878347,"time":"2026-08-18T15:27:20.487878347+05:30","type":"exec","action":"exec","pid":41761,"ppid":41760,"uid":1000,"user":"mukunda","comm":"curl","exe":"/usr/bin/curl","cmdline":"curl -s -o /dev/null --max-time 5 http://example.com/","ancestry":[{"pid":41760,"comm":"sh"},{"pid":41758,"comm":"npm-install.sh"}],"path":"/usr/bin/curl"}
+{"ts":1787047040579034810,"time":"2026-08-18T15:27:20.579034810+05:30","type":"net","action":"connect","pid":41761,"ppid":41760,"uid":1000,"user":"mukunda","comm":"curl","exe":"/usr/bin/curl","cmdline":"curl -s -o /dev/null --max-time 5 http://example.com/","ancestry":[{"pid":41760,"comm":"sh"},{"pid":41758,"comm":"npm-install.sh"}],"saddr":"192.168.159.128","sport":0,"daddr":"93.184.216.34","dport":80,"proto":6}
+{"ts":1787047040118181744,"time":"2026-08-18T15:27:20.118181744+05:30","type":"file","action":"secret_read","pid":41759,"ppid":41758,"uid":1000,"user":"mukunda","comm":"cat","exe":"/usr/bin/cat","cmdline":"cat /tmp/secrisk-demo/home/.ssh/id_rsa","ancestry":[{"pid":41758,"comm":"npm-install.sh"}],"path":"/tmp/secrisk-demo/home/.ssh/id_rsa","flags":0}
 ```
 
-`ppid=0` for a process that already existed before the sensor started (no fork
-record); lineage is populated only for processes spawned after attach.
+`ppid=0` now means genuinely unattributable: the loader backfills a parent from
+`/proc` for processes that predate the capture, so only one that also exited
+before it could be read stays unlinked.
 
 ### Inspect the loaded programs
 ```bash
@@ -258,18 +346,24 @@ sudo bpftool map show      # EVENTS (ringbuf), PID_PARENT (hash), MUTED (lru_has
 
 ---
 
-## 8. Status & next steps
+## 9. Status & next steps
 
 **Working:** the full sensor triad — process + file + network — in one BPF
-object, unified `Event` schema, ring-buffer transport, JSON-normalizing loader,
-per-sensor kernel-side noise filtering, verifier-clean on kernel 6.19. Lineage
-(`pid`/`ppid`) already links events across sensors (e.g. exec→connect on one pid).
+object, unified `Event` schema, ring-buffer transport, per-sensor kernel-side
+noise filtering, verifier-clean on kernel 6.19; and in userspace the normalizer
+of §7 — wall-clock timestamps, `/proc` enrichment (`user`, `exe`, `cmdline`,
+`container`), ppid backfill, multi-level `ancestry`, and `dfd`-correct absolute
+paths. Lineage links events across sensors (e.g. exec→connect on one pid), and
+now survives the ancestor exiting.
 
 **Not done yet:**
 1. **Correlation + detection** — suspicious lineage (build tool → downloader →
    shell), exec/write in `/tmp` or `/dev/shm`, unexpected `uid=0`, exec-then-
    connect chains. This is where the unified stream pays off, and the next
-   milestone.
-2. **Path resolution** for the file sensor (absolute paths via `d_path`).
-3. **Real source port** for the network sensor (currently `sport=0`).
-4. **Persistence/collector** — the JSON stream currently prints to stdout.
+   milestone. The demo viewer prototypes the grouping in JS; the engine itself
+   is unwritten.
+2. **Real source port** for the network sensor (currently `sport=0`).
+3. **IPv6** — `NetPayload` is v4-only; the union has room for a `family` field
+   and v6 addresses without disturbing the other variants.
+4. **Persistence/collector** — events go to stdout and a JSONL capture file;
+   nothing writes them to PostgreSQL yet.

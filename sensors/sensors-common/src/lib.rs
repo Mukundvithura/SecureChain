@@ -39,6 +39,10 @@ pub const EVENT_NET: u8 = 2;
 pub const FILE_WRITE: u8 = 0;
 pub const FILE_SECRET_READ: u8 = 1;
 
+/// `FilePayload::dfd` when the open resolves against the process's cwd — the
+/// value the plain `open`/`openat(AT_FDCWD, …)` path passes.
+pub const AT_FDCWD: i32 = -100;
+
 /// Fields common to every event, filled the same way by every sensor.
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -69,10 +73,18 @@ pub struct ExecPayload {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct FilePayload {
-    /// Path argument, NUL-terminated (truncated if longer than the buf).
+    /// Path argument, NUL-terminated (truncated if longer than the buf). Raw —
+    /// `openat` records whatever the caller passed, so this is relative
+    /// whenever the caller's was; `dfd` says what it is relative *to*.
     pub path: [u8; PATH_LEN],
     /// Open flags (`O_WRONLY`, `O_CREAT`, …).
     pub flags: i32,
+    /// The directory fd `path` resolves against when `path` is relative:
+    /// [`AT_FDCWD`] for the process's cwd, otherwise an fd userspace resolves
+    /// through `/proc/<pid>/fd/<dfd>`. Carried rather than resolved in-kernel —
+    /// walking a path in BPF means `d_path` on a `struct file` the tracepoint
+    /// does not hand us, and userspace can read the link for free.
+    pub dfd: i32,
     /// One of the `FILE_*` consts: why this open was emitted (write vs secret read).
     pub reason: u8,
     pub _pad: [u8; 3],

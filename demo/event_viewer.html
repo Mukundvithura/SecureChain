@@ -1,0 +1,1384 @@
+<title>SecRisk Event Viewer</title>
+
+<style>
+  :root {
+    --bg: #f7f8fa;
+    --surface: #ffffff;
+    --surface-2: #f0f2f6;
+    --border: #e2e5ea;
+    --border-strong: #cdd3dc;
+    --ink: #141922;
+    --ink-2: #3d4653;
+    --muted: #5c6672;
+    --accent: #3b6ea5;
+    --accent-soft: #e8f0f8;
+
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+
+    --t-exec: #3b6ea5;
+    --t-file: #6b5b9a;
+    --t-net: #17786f;
+
+    --font-mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas,
+      "Liberation Mono", monospace;
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+
+    --r: 6px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1216;
+      --surface: #161b21;
+      --surface-2: #1c222a;
+      --border: #242c35;
+      --border-strong: #333d49;
+      --ink: #e6eaef;
+      --ink-2: #c2cad4;
+      --muted: #8a95a3;
+      --accent: #6ea8dc;
+      --accent-soft: #17222e;
+
+      --good: #3fbe3f;
+      --warning: #fab219;
+      --serious: #ec835a;
+      --critical: #e35d5d;
+
+      --t-exec: #6ea8dc;
+      --t-file: #a394cf;
+      --t-net: #3fb3a6;
+    }
+  }
+
+  :root[data-theme="light"] {
+    --bg: #f7f8fa; --surface: #ffffff; --surface-2: #f0f2f6;
+    --border: #e2e5ea; --border-strong: #cdd3dc;
+    --ink: #141922; --ink-2: #3d4653; --muted: #5c6672;
+    --accent: #3b6ea5; --accent-soft: #e8f0f8;
+    --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+    --t-exec: #3b6ea5; --t-file: #6b5b9a; --t-net: #17786f;
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0f1216; --surface: #161b21; --surface-2: #1c222a;
+    --border: #242c35; --border-strong: #333d49;
+    --ink: #e6eaef; --ink-2: #c2cad4; --muted: #8a95a3;
+    --accent: #6ea8dc; --accent-soft: #17222e;
+    --good: #3fbe3f; --warning: #fab219; --serious: #ec835a; --critical: #e35d5d;
+    --t-exec: #6ea8dc; --t-file: #a394cf; --t-net: #3fb3a6;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 32px 20px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ---- masthead ---- */
+  .masthead { display: flex; flex-direction: column; gap: 6px; }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  h1 {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  .lede { margin: 0; color: var(--muted); font-size: 14px; max-width: 68ch; }
+
+  /* ---- panels ---- */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+
+  details > summary {
+    cursor: pointer;
+    padding: 12px 16px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    color: var(--ink-2);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    user-select: none;
+  }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before {
+    content: "+";
+    font-size: 14px;
+    color: var(--accent);
+    width: 11px;
+    flex: none;
+  }
+  details[open] > summary::before { content: "\2212"; }
+  details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .sum-label { text-transform: uppercase; }
+  .sum-note { color: var(--muted); text-transform: none; letter-spacing: 0; }
+
+  .pad { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 13px; }
+
+  textarea {
+    width: 100%;
+    min-height: 160px;
+    resize: vertical;
+    padding: 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r);
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre;
+    overflow-wrap: normal;
+    overflow-x: auto;
+  }
+  textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+
+  button {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    padding: 7px 14px;
+    border-radius: var(--r);
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2);
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
+  button.primary:hover { filter: brightness(1.08); color: #fff; }
+  button.link {
+    background: none; border: 0; padding: 0; color: var(--accent);
+    font-size: 12px; text-decoration: underline; text-underline-offset: 2px;
+  }
+  button.link:hover { filter: brightness(1.15); }
+
+  .parse-note { font-size: 12px; color: var(--muted); font-family: var(--font-mono); }
+
+  /* ---- drop target ---- */
+  /* Only visible while a file is over the window, so the page keeps its normal
+     layout and the hint appears exactly when it's actionable. */
+  .dropzone {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(59, 110, 165, 0.14);
+    backdrop-filter: blur(1px);
+  }
+  body.dragging .dropzone { display: flex; }
+  .dropzone > span {
+    background: var(--surface);
+    border: 2px dashed var(--accent);
+    border-radius: var(--r);
+    padding: 18px 26px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--accent);
+    box-shadow: 0 8px 30px rgba(20, 25, 34, 0.16);
+  }
+
+  /* ---- stats ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--r);
+    overflow: hidden;
+  }
+  .stat { background: var(--surface); padding: 14px 16px; display: flex; flex-direction: column; gap: 3px; }
+  .stat .n {
+    font-family: var(--font-mono); font-size: 26px; font-weight: 600;
+    line-height: 1.1; font-variant-numeric: tabular-nums;
+  }
+  .stat .k {
+    font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-family: var(--font-mono);
+  }
+  .stat.flag .n { color: var(--critical); }
+  .stat.dim .n { color: var(--muted); }
+
+  /* ---- controls ---- */
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; }
+
+  .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--r); overflow: hidden; }
+  .seg button {
+    border: 0; border-radius: 0; background: var(--surface); padding: 6px 13px;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+  }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .seg button[aria-pressed="true"]:hover { color: #fff; }
+
+  label.check {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 13px; color: var(--ink-2); cursor: pointer;
+  }
+  label.check input { accent-color: var(--accent); width: 15px; height: 15px; flex: none; }
+
+  /* ---- noise panel ---- */
+  .rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(268px, 1fr)); gap: 10px 20px; }
+
+  .rule { display: flex; align-items: flex-start; gap: 9px; }
+  .rule input { accent-color: var(--accent); width: 15px; height: 15px; margin-top: 3px; flex: none; }
+  .rule .rt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .rule .rn {
+    font-size: 13px; color: var(--ink);
+    display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap;
+  }
+  .rule .rc {
+    font-family: var(--font-mono); font-size: 11px; color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .rule .rw { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+
+  .rule-sep { height: 1px; background: var(--border); }
+
+  .guard {
+    font-size: 12px; color: var(--ink-2); line-height: 1.5;
+    background: var(--accent-soft); border-radius: var(--r);
+    padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .guard b { font-weight: 600; }
+
+  input[type="text"] {
+    width: 100%; padding: 8px 10px;
+    border: 1px solid var(--border-strong); border-radius: var(--r);
+    background: var(--bg); color: var(--ink);
+    font-family: var(--font-mono); font-size: 12px;
+  }
+  input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field-label { font-size: 12px; color: var(--muted); }
+
+  .floor {
+    font-family: var(--font-mono); font-size: 12px; color: var(--muted);
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+  }
+  .floor b { color: var(--ink); font-weight: 600; }
+
+  /* ---- events ---- */
+  .ev {
+    display: grid;
+    grid-template-columns: 76px 60px 1fr auto;
+    gap: 14px;
+    align-items: baseline;
+    padding: 10px 16px 10px 13px;
+    border-left: 3px solid transparent;
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+  }
+  .ev:last-child { border-bottom: 0; }
+  .ev.sev-critical { border-left-color: var(--critical); background: color-mix(in srgb, var(--critical) 5%, var(--surface)); }
+  .ev.sev-serious  { border-left-color: var(--serious); background: color-mix(in srgb, var(--serious) 5%, var(--surface)); }
+  .ev.sev-warning  { border-left-color: var(--warning); }
+  .ev.hidden-ev { opacity: 0.44; }
+  .ev.hidden-ev .subject { font-weight: 400; }
+
+  .ev .t { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+  .ev .t .last { display: block; font-size: 10.5px; opacity: 0.75; }
+
+  .tag { font-size: 10.5px; letter-spacing: 0.1em; font-weight: 600; padding: 2px 0; }
+  .tag.exec { color: var(--t-exec); }
+  .tag.file { color: var(--t-file); }
+  .tag.net  { color: var(--t-net); }
+
+  .ev .body { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .ev .marks { display: flex; flex-wrap: wrap; gap: 5px; justify-content: flex-end; }
+
+  .verb { color: var(--muted); }
+  .subject { color: var(--ink); font-weight: 500; overflow-wrap: anywhere; }
+  .meta { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+  .meta b { font-weight: 600; color: var(--ink-2); }
+  .meta .cmdline { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+    font-size: 10.5px; letter-spacing: 0.04em; padding: 2px 8px;
+    border-radius: 99px; border: 1px solid; font-family: var(--font-sans);
+  }
+  .chip.critical { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 45%, transparent); background: color-mix(in srgb, var(--critical) 9%, transparent); }
+  .chip.serious  { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 45%, transparent); background: color-mix(in srgb, var(--serious) 9%, transparent); }
+  .chip.warning  { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); background: color-mix(in srgb, var(--warning) 9%, transparent); }
+  .chip.info     { color: var(--muted); border-color: var(--border-strong); }
+  .chip.count    { color: var(--ink-2); border-color: var(--border-strong); background: var(--surface-2); font-family: var(--font-mono); }
+  .chip.muted    { color: var(--muted); border-color: var(--border-strong); border-style: dashed; }
+  .chip .g { font-family: var(--font-mono); }
+
+  /* ---- chains ---- */
+  .chain { border-bottom: 1px solid var(--border); }
+  .chain:last-child { border-bottom: 0; }
+  .chain-head {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    padding: 12px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+  }
+  .chain-title { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+  .chain-sub { font-size: 11.5px; color: var(--muted); font-family: var(--font-mono); }
+  .chain.flagged .chain-head { background: color-mix(in srgb, var(--critical) 8%, var(--surface-2)); }
+  .spacer { flex: 1; }
+
+  .empty { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    font-size: 11.5px; color: var(--muted); font-family: var(--font-mono);
+  }
+
+  footer {
+    border-top: 1px solid var(--border); padding-top: 16px;
+    font-size: 12px; color: var(--muted); max-width: 74ch;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  footer p { margin: 0; }
+  footer code {
+    font-family: var(--font-mono); background: var(--surface-2);
+    padding: 1px 5px; border-radius: 3px; font-size: 11.5px;
+  }
+
+  @media (max-width: 640px) {
+    .ev { grid-template-columns: 1fr; gap: 5px; }
+    .ev .marks { justify-content: flex-start; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="dropzone" aria-hidden="true"><span>Drop capture to load</span></div>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div class="eyebrow">SecRisk &middot; eBPF sensor suite</div>
+    <h1>Event Viewer</h1>
+    <p class="lede">
+      Open a capture from <code>sensors</code> — every run writes one to
+      <code>captures/sensors-*.jsonl</code> — or drop it anywhere on this page,
+      or paste the JSON lines below. Each kernel event becomes a plain sentence;
+      background churn is suppressed by named rules you can switch off; and what
+      survives is grouped by process lineage so a multi-step chain reads as one
+      story.
+    </p>
+  </header>
+
+  <details class="card" id="inputBox" open>
+    <summary><span class="sum-label">Load sensor output</span></summary>
+    <div class="pad">
+      <textarea id="raw" spellcheck="false" aria-label="Sensor JSON output"></textarea>
+      <div class="row">
+        <button class="primary" id="openBtn">Open capture file</button>
+        <input type="file" id="fileInput" accept=".jsonl,.json,.log,.txt,text/plain"
+               hidden aria-hidden="true" />
+        <button id="parseBtn">Render pasted text</button>
+        <button id="sampleBtn">Load sample</button>
+        <button id="clearBtn">Clear</button>
+        <span class="parse-note" id="note"></span>
+      </div>
+    </div>
+  </details>
+
+  <div class="stats" id="stats"></div>
+
+  <details class="card" id="noiseBox">
+    <summary>
+      <span class="sum-label">Noise filters</span>
+      <span class="sum-note" id="noiseSummary"></span>
+    </summary>
+    <div class="pad">
+      <div class="rules" id="rules"></div>
+      <div class="rule-sep"></div>
+      <div class="rules">
+        <label class="rule">
+          <input type="checkbox" id="collapseRepeats" checked />
+          <span class="rt">
+            <span class="rn">Collapse repeats <span class="rc" id="collapseCount"></span></span>
+            <span class="rw">Fold identical events into one row with a count. The
+              same command run twenty times is one fact, not twenty.</span>
+          </span>
+        </label>
+        <label class="rule">
+          <input type="checkbox" id="showHidden" />
+          <span class="rt">
+            <span class="rn">Show what was hidden</span>
+            <span class="rw">Render suppressed events dimmed and labelled with the
+              rule that caught them, instead of removing them.</span>
+          </span>
+        </label>
+      </div>
+      <div class="rule-sep"></div>
+      <div>
+        <label class="field-label" for="customPat">
+          Also hide events matching (comma-separated text, checked against path and process name)
+        </label>
+        <input type="text" id="customPat" spellcheck="false"
+               placeholder="e.g. /.cache/, obsidian, /snap/" />
+      </div>
+      <p class="guard">
+        <b>Suppression never hides a finding.</b> Credential reads, anything run
+        from or written to a temp directory, and connections to unusual ports stay
+        visible no matter which rules are on &mdash; including when they match a
+        rule's own pattern. Noise rules only ever remove events that scored
+        nothing.
+      </p>
+    </div>
+  </details>
+
+  <div class="floor" id="floor"></div>
+
+  <div class="controls">
+    <div class="seg" role="group" aria-label="View">
+      <button data-view="timeline" aria-pressed="true">Timeline</button>
+      <button data-view="chains" aria-pressed="false">Chains</button>
+    </div>
+    <div class="row">
+      <div class="seg" role="group" aria-label="Filter by type">
+        <button data-filter="all" aria-pressed="true">All</button>
+        <button data-filter="exec" aria-pressed="false">Processes</button>
+        <button data-filter="file" aria-pressed="false">Files</button>
+        <button data-filter="net" aria-pressed="false">Network</button>
+      </div>
+      <label class="check">
+        <input type="checkbox" id="notableOnly" />
+        Findings only
+      </label>
+    </div>
+  </div>
+
+  <div class="card" id="out"></div>
+
+  <div class="legend">
+    <span>EXEC &mdash; process launched</span>
+    <span>FILE &mdash; opened for write, or a watchlisted secret read</span>
+    <span>NET &mdash; outbound TCP connect</span>
+  </div>
+
+  <footer>
+    <p>
+      The column is relative to the first event in the paste because that is the
+      easier thing to read; each record also carries an absolute
+      <code>ts</code> (epoch nanoseconds) and <code>time</code>, which the loader
+      derives from the kernel's boot-relative clock at capture.
+    </p>
+    <p>
+      <code>parent unknown</code> now means genuinely unknown &mdash; the loader
+      backfills the parent from <code>/proc</code> for processes that predate the
+      capture, so only a process that also exited before it could be read stays
+      unattributed. Source ports read <code>0</code> on outbound connects: at the
+      <code>SYN_SENT</code> transition the ephemeral port is not assigned yet.
+    </p>
+  </footer>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var SAMPLE = [
+    '{"ts":1787047038406625959,"time":"2026-08-18T15:27:18.406625959+05:30","type":"exec","action":"exec","pid":41716,"ppid":470,"uid":0,"user":"root","comm":"systemd-userwor","exe":"/usr/lib/systemd/systemd-userwork","cmdline":"(systemd-userwork) waiting...","ancestry":[{"pid":470,"comm":"systemd-logind"},{"pid":1,"comm":"systemd"}],"path":"/usr/lib/systemd/systemd-userwork"}',
+    '{"ts":1787047039912451733,"time":"2026-08-18T15:27:19.912451733+05:30","type":"exec","action":"exec","pid":41758,"ppid":25330,"uid":1000,"user":"mukunda","comm":"npm-install.sh","exe":"/bin/dash","cmdline":"/bin/sh /tmp/secrisk-demo/npm-install.sh","ancestry":[{"pid":25330,"comm":"zsh"},{"pid":1,"comm":"systemd"}],"path":"/usr/bin/dash"}',
+    '{"ts":1787047040118181744,"time":"2026-08-18T15:27:20.118181744+05:30","type":"file","action":"secret_read","pid":41759,"ppid":41758,"uid":1000,"user":"mukunda","comm":"cat","exe":"/usr/bin/cat","cmdline":"cat /tmp/secrisk-demo/home/.ssh/id_rsa","ancestry":[{"pid":41758,"comm":"npm-install.sh"},{"pid":25330,"comm":"zsh"}],"path":"/tmp/secrisk-demo/home/.ssh/id_rsa","flags":0}',
+    '{"ts":1787047040220310542,"time":"2026-08-18T15:27:20.220310542+05:30","type":"file","action":"write","pid":41760,"ppid":41758,"uid":1000,"user":"mukunda","comm":"sh","exe":"/bin/dash","cmdline":"sh /tmp/secrisk-demo/node_modules/left-pad/postinstall.sh","ancestry":[{"pid":41758,"comm":"npm-install.sh"},{"pid":25330,"comm":"zsh"}],"path":"/dev/shm/.update-cache","flags":577}',
+    '{"ts":1787047040487878347,"time":"2026-08-18T15:27:20.487878347+05:30","type":"exec","action":"exec","pid":41761,"ppid":41760,"uid":1000,"user":"mukunda","comm":"curl","exe":"/usr/bin/curl","cmdline":"curl -s -o /dev/null --max-time 5 http://example.com/","ancestry":[{"pid":41760,"comm":"sh"},{"pid":41758,"comm":"npm-install.sh"},{"pid":25330,"comm":"zsh"}],"path":"/usr/bin/curl"}',
+    '{"ts":1787047040579034810,"time":"2026-08-18T15:27:20.579034810+05:30","type":"net","action":"connect","pid":41761,"ppid":41760,"uid":1000,"user":"mukunda","comm":"curl","exe":"/usr/bin/curl","cmdline":"curl -s -o /dev/null --max-time 5 http://example.com/","ancestry":[{"pid":41760,"comm":"sh"},{"pid":41758,"comm":"npm-install.sh"},{"pid":25330,"comm":"zsh"}],"saddr":"192.168.159.128","sport":0,"daddr":"93.184.216.34","dport":80,"proto":6}',
+    '{"ts":1787047041003128680,"time":"2026-08-18T15:27:21.003128680+05:30","type":"net","action":"connect","pid":3060,"ppid":2984,"uid":1000,"user":"mukunda","comm":"Socket Thread","exe":"/usr/lib/firefox-esr/firefox-esr","cmdline":"/usr/lib/firefox-esr/firefox-esr","ancestry":[{"pid":2984,"comm":"systemd"},{"pid":1,"comm":"systemd"}],"saddr":"192.168.159.128","sport":0,"daddr":"34.149.66.163","dport":443,"proto":6}',
+    '{"ts":1787047041805930654,"time":"2026-08-18T15:27:21.805930654+05:30","type":"file","action":"write","pid":3060,"ppid":2984,"uid":1000,"user":"mukunda","comm":"Cache2 I/O","exe":"/usr/lib/firefox-esr/firefox-esr","cmdline":"/usr/lib/firefox-esr/firefox-esr","ancestry":[{"pid":2984,"comm":"systemd"},{"pid":1,"comm":"systemd"}],"path":"/home/mukunda/.cache/mozilla/firefox/xt2p8jo2.default-esr/cache2/entries/E02A63A3D35C7397C8D981143C924BFFAA4D1583","flags":578}'
+  ].join("\n");
+
+  var PORTS = {
+    20: "FTP-data", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
+    80: "HTTP", 110: "POP3", 123: "NTP", 143: "IMAP", 443: "HTTPS", 445: "SMB",
+    587: "SMTP", 993: "IMAPS", 3306: "MySQL", 3389: "RDP", 5432: "PostgreSQL",
+    6379: "Redis", 8080: "HTTP-alt", 8443: "HTTPS-alt", 9000: "HTTP-alt"
+  };
+
+  // Ports conventionally used by reverse shells and IRC-era bots. Not proof of
+  // anything alone — it earns the event a look, nothing more.
+  var ODD_PORTS = { 1337: 1, 4444: 1, 4445: 1, 5555: 1, 6667: 1, 31337: 1 };
+
+  // Interpreters, shells and downloaders. A supply-chain payload almost always
+  // runs through one of these rather than shipping its own binary. Nothing in
+  // this list is ever suppressed as noise, whatever else it matches.
+  var TOOLS = {
+    sh: 1, bash: 1, dash: 1, zsh: 1, ksh: 1, fish: 1, curl: 1, wget: 1, nc: 1,
+    ncat: 1, netcat: 1, socat: 1, python: 1, python3: 1, perl: 1, ruby: 1,
+    node: 1, php: 1, base64: 1, xxd: 1, ssh: 1, scp: 1, sftp: 1, openssl: 1,
+    chmod: 1, chown: 1, crontab: 1, systemctl: 1, insmod: 1, modprobe: 1
+  };
+
+  // World-writable, usually cleared on reboot: where a payload gets staged.
+  var STAGING = ["/tmp/", "/dev/shm/", "/var/tmp/", "/run/shm/"];
+
+  // --- noise rules ---------------------------------------------------------
+  // Each rule is a named, switchable reason for hiding an event. Order matters
+  // only for attribution (first match names the rule in the UI).
+
+  var BROWSER_PATHS = [
+    "/.cache/mozilla/", "/.mozilla/", "/.cache/google-chrome/",
+    "/.config/google-chrome/", "/.cache/chromium/", "/.config/chromium/",
+    "/.cache/BraveSoftware/", "/.config/BraveSoftware/",
+    "/.cache/microsoft-edge/", "/.config/microsoft-edge/",
+    "/.thunderbird/", "/.cache/thunderbird/"
+  ];
+  var BROWSER_COMMS = [
+    "firefox", "chrome", "chromium", "brave", "thunderbird", "Cache2 I/O",
+    "Socket Thread", "IPC I/O", "DOM Worker", "Web Content", "Isolated Web",
+    "Privileged Cont", "WebExtensions", "StreamTrans", "mozStorage",
+    "URL Classifier", "Cached Cert", "SSL Cert", "JS Watchdog", "GMPThread",
+    "Worker Launcher", "TaskController", "ImageBridge", "ImgDecoder",
+    "Backgroundthrea", "localStorage DB", "QuotaManager", "IndexedDB",
+    "HTML5 Parser", "AudioIPC", "Compositor", "Renderer", "DataStorage",
+    "Netlink Monitor", "MediaDecoder", "RemoteLzyStream", "mozilla",
+    "Permission", "Cookie"
+  ];
+
+  var DESKTOP_PATHS = [
+    "/.config/xfce4/", "/.config/dconf/", "/.cache/sessions/",
+    "/.cache/thumbnails/", "/.cache/fontconfig/", "/.cache/mesa_shader_cache",
+    "/.cache/gstreamer", "/.config/pulse/", "/.local/share/gvfs-metadata/",
+    "/.local/share/recently-used", "/.ICEauthority", "/.Xauthority",
+    "/.xsession-errors", "/.config/ibus/", "/.cache/at-spi"
+  ];
+  var DESKTOP_COMMS = [
+    "xfce4", "xfsettingsd", "xfdesktop", "xfwm4", "xfconfd", "xfce4-panel",
+    "Thunar", "thunar", "gvfsd", "gvfs-", "at-spi", "ibus", "pulseaudio",
+    "pipewire", "wireplumber", "dbus-daemon", "dbus-launch", "upowerd",
+    "polkitd", "gnome-keyring", "tracker-miner", "tracker-extract",
+    "xdg-desktop-por", "xdg-permission", "light-locker", "blueman", "nm-applet",
+    "xembedsniproxy", "plasmashell", "kwin", "ksmserver", "gnome-shell",
+    "mutter", "Xorg", "picom", "notifyd", "gmain", "gdbus", "pool-spawner",
+    "dconf worker", "genmon", "panel-"
+  ];
+
+  var SYSTEM_PATHS = [
+    "/var/lib/systemd/", "/run/systemd/", "/run/user/", "/var/lib/dbus/",
+    "/var/lib/NetworkManager/", "/var/lib/upower/", "/var/lib/polkit",
+    "/run/dbus/", "/run/udev/"
+  ];
+  var SYSTEM_COMMS = [
+    "systemd", "(sd-pam)", "init", "rsyslogd", "cron", "anacron", "udevadm",
+    "dbus-broker", "irqbalance", "ModemManager", "NetworkManager",
+    "wpa_supplicant", "avahi-daemon", "chronyd", "ntpd", "accounts-daemon",
+    "rtkit-daemon", "colord", "cupsd", "snapd", "packagekitd", "logrotate",
+    "kworker", "kthreadd", "ksoftirqd", "migration", "rcu_", "watchdog",
+    "agetty", "login", "sshd", "auditd"
+  ];
+
+  // Compiler and package-cache output only. Deliberately excludes
+  // /node_modules/ and /.git/hooks/ — those are where a malicious package
+  // actually lands, so hiding them would defeat the point of the tool.
+  var BUILD_PATHS = [
+    "/target/debug/", "/target/release/", "/.cargo/registry/", "/.cargo/git/",
+    "/.rustup/", "/incremental/", "/__pycache__/", "/.pytest_cache/",
+    "/.mypy_cache/", "/.gradle/", "/.m2/repository/", "/.npm/_cacache/",
+    "/.cache/go-build/", "/CMakeFiles/", "/.ccache/"
+  ];
+  var BUILD_COMMS = [
+    "cargo", "rustc", "rust-analyzer", "bpf-linker", "collect2", "cc1", "cc1plus",
+    "ld", "lld", "ar", "ranlib", "as", "gcc", "g++", "clang", "clang++", "cpp",
+    "make", "cmake", "ninja", "tsserver", "esbuild", "webpack", "rollup",
+    "gopls", "javac", "gradle", "mvn", "jest", "rustdoc", "build-script-"
+  ];
+
+  var STATE_PATHS = [
+    ".zsh_history", ".bash_history", ".viminfo", ".lesshst", ".python_history",
+    ".node_repl_history", ".wget-hsts", ".sudo_as_admin_successful",
+    "/.local/state/", "/.cache/Code/", "/.config/Code/", "/.cache/JetBrains/",
+    "/.local/share/Trash/", "/.cache/pip/", "/.config/htop/"
+  ];
+  var STATE_COMMS = ["zsh", "code", "Code", "jetbrains", "htop", "tmux", "screen"];
+
+  // Public CA material. The kernel watchlist matches these on the `.pem` suffix,
+  // but a certificate store holds public certificates — reading one is not
+  // credential access by anybody, so no process is exempted here.
+  var CERT_STORE_PATHS = [
+    "/etc/ssl/", "/usr/lib/ssl/", "/usr/share/ca-certificates/",
+    "/usr/local/share/ca-certificates/", "/etc/ca-certificates/", "/etc/pki/",
+    "/var/lib/ca-certificates/", "/.local/share/mkcert/"
+  ];
+  var CERT_BUNDLES = {
+    "cert.pem": 1, "ca-bundle.pem": 1, "ca-bundle.crt": 1, "cacert.pem": 1,
+    "ca-certificates.crt": 1, "tls-ca-bundle.pem": 1
+  };
+
+  // Tools whose job is to walk every process. `ps` alone reads
+  // /proc/<pid>/environ once per process, so one invocation can post hundreds of
+  // credential-access rows. Matched on comm, so a payload that reads an environ
+  // directly (`cat /proc/1234/environ`) is still reported — an attacker naming
+  // their binary `ps` defeats this, which is the price of a comm-based rule.
+  var PROC_LISTERS = [
+    "ps", "top", "htop", "btop", "atop", "glances", "pgrep", "pkill", "pidof",
+    "lsof", "fuser", "procps", "sessionclean", "systemd-cgls", "systemd-cgtop",
+    "gnome-system-mo", "plasma-systemmo", "ksysguard", "monitord"
+  ];
+
+  var PROC_ENVIRON_RE = /^\/proc\/\d+\/environ$/;
+
+  // A `secret_read` the kernel-side watchlist matched but that carries no
+  // credential signal. Returns the id of the rule that covers it, or null.
+  // Split out because `assess`, `immune` and the rules themselves all need the
+  // same answer: without it these events are rated critical and made immune to
+  // every filter, so no rule could ever hide them.
+  function benignSecretRead(e) {
+    if (e.type !== "file" || e.reason !== "secret_read") return null;
+    var p = e.path || "";
+    if (pathAny(e, CERT_STORE_PATHS) || CERT_BUNDLES[basename(p)]) return "certs";
+    if (PROC_ENVIRON_RE.test(p)) {
+      // Exact match, not the prefix match the other comm lists use: `ps` as a
+      // prefix would also swallow `psql`. Parens are stripped because the kernel
+      // reports a script's comm as `(sessionclean)`.
+      var c = String(e.comm || "").replace(/^\(|\)$/g, "");
+      for (var i = 0; i < PROC_LISTERS.length; i++) {
+        if (c === PROC_LISTERS[i]) return "proclist";
+      }
+    }
+    return null;
+  }
+
+  var NOISE_RULES = [
+    // The two watchlist-artefact rules come first so a suppressed secret read is
+    // attributed to the reason that actually explains it — `cargo` opening the
+    // CA bundle would otherwise be filed under "compiler caches", which is true
+    // but says nothing about why a *secret read* was dropped.
+    {
+      id: "proclist", name: "Process listings reading /proc/*/environ", on: true,
+      why: "ps and friends read every process's environ, so one invocation posts hundreds of credential-access rows. Matched on the reading process, so a payload reading an environ directly still shows.",
+      test: function (e) { return benignSecretRead(e) === "proclist"; }
+    },
+    {
+      id: "certs", name: "System certificate stores", on: true,
+      why: "The kernel watchlist matches any .pem, which catches the public CA bundle every TLS client opens. Certificates in these stores are public — reading one is not credential access.",
+      test: function (e) { return benignSecretRead(e) === "certs"; }
+    },
+    {
+      id: "browser", name: "Browser cache & threads", on: true,
+      why: "Browsers rewrite cache entries and open TLS sockets continuously. On a desktop capture this is usually most of the volume.",
+      test: function (e) { return pathAny(e, BROWSER_PATHS) || commAny(e, BROWSER_COMMS); }
+    },
+    {
+      id: "desktop", name: "Desktop session & panel", on: true,
+      why: "Window manager, panel, settings daemon, portals and their worker threads. Constant, and none of it is a supply chain.",
+      test: function (e) { return pathAny(e, DESKTOP_PATHS) || commAny(e, DESKTOP_COMMS); }
+    },
+    {
+      id: "system", name: "systemd & system services", on: true,
+      why: "Service manager, udev, network and power daemons. Excludes /var/log so log tampering stays visible.",
+      test: function (e) { return pathAny(e, SYSTEM_PATHS) || commAny(e, SYSTEM_COMMS); }
+    },
+    {
+      id: "build", name: "Compiler & package caches", on: true,
+      why: "Build output and dependency caches. Excludes node_modules and .git/hooks — that is exactly where a malicious package lands.",
+      test: function (e) { return pathAny(e, BUILD_PATHS) || commAny(e, BUILD_COMMS); }
+    },
+    {
+      id: "state", name: "Shell & editor state files", on: true,
+      why: "History files, editor caches, trash. Written on almost every keystroke or prompt.",
+      test: function (e) { return pathAny(e, STATE_PATHS) || commAny(e, STATE_COMMS); }
+    },
+    {
+      id: "custom", name: "Your own patterns", on: true,
+      why: "Whatever you type in the box below. Matched as plain text against the path and the process name.",
+      test: function (e) {
+        if (!customPatterns.length) return false;
+        var hay = ((e.path || "") + " " + (e.comm || "") + " " + (e.daddr || "")).toLowerCase();
+        for (var i = 0; i < customPatterns.length; i++) {
+          if (hay.indexOf(customPatterns[i]) !== -1) return true;
+        }
+        return false;
+      }
+    }
+  ];
+
+  // --- state ---------------------------------------------------------------
+
+  var events = [];
+  var view = "timeline";
+  var filter = "all";
+  var notableOnly = false;
+  var collapseRepeats = true;
+  var showHidden = false;
+  var customPatterns = [];
+  var ruleOn = {};
+  NOISE_RULES.forEach(function (r) { ruleOn[r.id] = r.on; });
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function clip(s, n) {
+    s = String(s);
+    return s.length > n ? s.slice(0, n - 1) + "\u2026" : s;
+  }
+
+  function basename(p) {
+    var i = String(p).lastIndexOf("/");
+    return i === -1 ? String(p) : String(p).slice(i + 1);
+  }
+
+  function startsWithAny(p, list) {
+    for (var i = 0; i < list.length; i++) {
+      if (String(p).indexOf(list[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  function pathAny(e, list) {
+    var p = e.path;
+    if (!p) return false;
+    for (var i = 0; i < list.length; i++) {
+      if (p.indexOf(list[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function commAny(e, list) {
+    var c = e.comm;
+    if (!c) return false;
+    for (var i = 0; i < list.length; i++) {
+      if (c.indexOf(list[i]) === 0) return true;
+    }
+    return false;
+  }
+
+  // --- parsing -------------------------------------------------------------
+
+  function parse(text) {
+    var lines = String(text).split(/\r?\n/);
+    var out = [], skipped = 0;
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) continue;
+      var start = line.indexOf("{");
+      if (start === -1) { skipped++; continue; }
+      var obj;
+      try { obj = JSON.parse(line.slice(start)); }
+      catch (err) { skipped++; continue; }
+      if (!obj || typeof obj.type !== "string") { skipped++; continue; }
+      out.push(compat(obj));
+    }
+    out.sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
+    return { events: out, skipped: skipped };
+  }
+
+  // Captures from before the loader grew a normalizer carry `reason` on file
+  // events and nothing at all on the others; the normalized stream carries
+  // `action` on every event. Fill in whichever is missing so one capture format
+  // is not privileged over the other and old captures still open.
+  function compat(e) {
+    if (!e.action) {
+      e.action = e.type === "exec" ? "exec"
+        : e.type === "net" ? "connect"
+        : e.reason || "write";
+    }
+    if (!e.reason) e.reason = e.action;
+    return e;
+  }
+
+  // --- interpretation ------------------------------------------------------
+
+  function assess(e) {
+    if (e.type === "file") {
+      // A cert-store or process-listing read is a watchlist artefact, not
+      // credential access — rate it as ordinary traffic so it neither turns the
+      // row red nor makes the event immune to the rule that covers it.
+      if (benignSecretRead(e)) return null;
+      if (e.reason === "secret_read") return { sev: "critical", label: "Credential access" };
+      if (startsWithAny(e.path, STAGING)) return { sev: "serious", label: "Staged in temp" };
+      return null;
+    }
+    if (e.type === "net") {
+      if (ODD_PORTS[e.dport]) return { sev: "critical", label: "Unusual port" };
+      return { sev: "info", label: "Outbound" };
+    }
+    if (e.type === "exec") {
+      if (startsWithAny(e.path, STAGING)) return { sev: "critical", label: "Ran from temp" };
+      if (TOOLS[basename(e.path)]) return { sev: "warning", label: "Shell / downloader" };
+      return null;
+    }
+    return null;
+  }
+
+  function isFinding(e) {
+    var a = assess(e);
+    return !!a && a.sev !== "info";
+  }
+
+  // An event no noise rule may touch. Deliberately stricter than isFinding:
+  // a shell exec is worth a chip but is not, on its own, worth overriding a
+  // filter the user deliberately switched on.
+  function immune(e) {
+    var a = assess(e);
+    if (a && (a.sev === "critical" || a.sev === "serious")) return true;
+    if (e.type === "file" && e.reason === "secret_read") return !benignSecretRead(e);
+    if (startsWithAny(e.path, STAGING)) return true;
+    if (TOOLS[basename(e.path || "")]) return true;
+    return false;
+  }
+
+  // Which rule, if any, hides this event.
+  function noiseRuleFor(e) {
+    if (immune(e)) return null;
+    for (var i = 0; i < NOISE_RULES.length; i++) {
+      var r = NOISE_RULES[i];
+      if (!ruleOn[r.id]) continue;
+      if (r.test(e)) return r;
+    }
+    return null;
+  }
+
+  function describe(e) {
+    if (e.type === "exec") return { verb: "Ran", subject: e.path || "(unknown)" };
+    if (e.type === "file") {
+      return {
+        verb: e.reason === "secret_read" ? "Read secret" : "Wrote",
+        subject: e.path || "(unknown)"
+      };
+    }
+    if (e.type === "net") {
+      var svc = PORTS[e.dport];
+      return {
+        verb: "Connected out to",
+        subject: (e.daddr || "?") + ":" + (e.dport === undefined ? "?" : e.dport) +
+          (svc ? "  " + svc : "")
+      };
+    }
+    return { verb: e.type, subject: "" };
+  }
+
+  function metaLine(rec) {
+    var e = rec.e, bits = [];
+    if (e.comm) bits.push("<b>" + esc(e.comm) + "</b>");
+
+    if (rec.n > 1) {
+      var pids = Object.keys(rec.pids);
+      var shown = pids.slice(0, 3).join(", ") + (pids.length > 3 ? "…" : "");
+      bits.push(pids.length === 1 ? "pid " + esc(shown)
+        : esc(pids.length) + " pids: " + esc(shown));
+    } else {
+      bits.push("pid " + esc(e.pid));
+      // The normalizer backfills a parent from /proc for processes that predate
+      // the capture, and names it, so this is usually a name now and not a bare
+      // number — and only genuinely unknowable parents read as unknown.
+      var parent = (e.ancestry && e.ancestry[0]) || null;
+      bits.push(e.ppid
+        ? "parent " + (parent && parent.comm ? "<b>" + esc(parent.comm) + "</b> " : "") + esc(e.ppid)
+        : "parent unknown");
+    }
+
+    bits.push(e.uid === 0 ? "<b>root</b>" : (e.user ? esc(e.user) : "uid " + esc(e.uid)));
+    if (e.container) bits.push("container " + esc(e.container));
+
+    if (e.type === "net") {
+      var src = e.saddr ? esc(e.saddr) : "?";
+      if (e.sport) src += ":" + esc(e.sport);
+      bits.push("from " + src);
+      if (e.proto === 6) bits.push("TCP");
+    }
+    if (e.type === "file" && e.flags !== undefined) {
+      // O_RDONLY is literally 0, so "flags 00" is a confusing way to say
+      // "opened purely for reading".
+      bits.push(Number(e.flags) === 0 ? "read-only"
+        : "flags 0" + Number(e.flags).toString(8));
+    }
+    if (rec.n === 1 && e.cmdline && e.cmdline !== e.exe) {
+      bits.push("<span class=\"cmdline\">" + esc(clip(e.cmdline, 120)) + "</span>");
+    }
+    return bits.join(" &middot; ");
+  }
+
+  // --- lineage -------------------------------------------------------------
+
+  function buildChains(list) {
+    var parentOf = {}, seen = {};
+    list.forEach(function (e) {
+      seen[e.pid] = true;
+      if (parentOf[e.pid] === undefined) parentOf[e.pid] = e.ppid || 0;
+    });
+
+    function rootOf(pid) {
+      var cur = pid, guard = 0;
+      while (guard++ < 64) {
+        var par = parentOf[cur];
+        if (!par || !seen[par] || par === cur) break;
+        cur = par;
+      }
+      return cur;
+    }
+
+    var groups = {};
+    list.forEach(function (e) {
+      var r = rootOf(e.pid);
+      if (!groups[r]) groups[r] = { root: r, events: [], pids: {} };
+      groups[r].events.push(e);
+      groups[r].pids[e.pid] = true;
+    });
+
+    return Object.keys(groups).map(function (k) {
+      var g = groups[k];
+      var f = { secret: false, staged: false, net: false, tool: false };
+      g.events.forEach(function (e) {
+        if (e.type === "file" && e.reason === "secret_read") f.secret = true;
+        if (startsWithAny(e.path, STAGING)) f.staged = true;
+        if (e.type === "net") f.net = true;
+        if (e.type === "exec" && TOOLS[basename(e.path)]) f.tool = true;
+      });
+      // The three behaviours that actually make a supply-chain chain. A shell
+      // alone is not interesting; a shell that also reads a key and connects
+      // out is the whole thesis.
+      g.flags = f;
+      g.score = (f.secret ? 1 : 0) + (f.staged ? 1 : 0) + (f.net && f.tool ? 1 : 0);
+      g.start = g.events[0].ts;
+      return g;
+    }).sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.start - b.start;
+    });
+  }
+
+  // --- pipeline ------------------------------------------------------------
+
+  // Type + findings filters only. Noise attribution happens separately so the
+  // counts stay stable regardless of which type tab is open.
+  function afterUserFilters() {
+    return events.filter(function (e) {
+      if (filter !== "all" && e.type !== filter) return false;
+      if (notableOnly && !isFinding(e)) return false;
+      return true;
+    });
+  }
+
+  function partition(list) {
+    var kept = [], hidden = [];
+    list.forEach(function (e) {
+      var r = noiseRuleFor(e);
+      if (r) hidden.push({ e: e, rule: r });
+      else kept.push(e);
+    });
+    return { kept: kept, hidden: hidden };
+  }
+
+  // Fold identical events together. Key deliberately ignores pid: the same
+  // command from three different pids is the same fact repeated.
+  function collapse(list) {
+    if (!collapseRepeats) {
+      return list.map(function (e) {
+        var p = {}; p[e.pid] = true;
+        return { e: e, n: 1, last: e.ts, pids: p };
+      });
+    }
+    var map = {}, out = [];
+    list.forEach(function (e) {
+      var what = e.type === "net" ? (e.daddr + ":" + e.dport) : (e.path || "");
+      var key = [e.type, e.comm || "", e.uid, what, e.reason || ""].join("\u0000");
+      var rec = map[key];
+      if (rec) {
+        rec.n++;
+        rec.last = e.ts;
+        rec.pids[e.pid] = true;
+        return;
+      }
+      var pids = {}; pids[e.pid] = true;
+      rec = { e: e, n: 1, last: e.ts, pids: pids };
+      map[key] = rec;
+      out.push(rec);
+    });
+    return out;
+  }
+
+  // --- rendering -----------------------------------------------------------
+
+  function relTime(ts, base) {
+    return "+" + ((Number(ts) - base) / 1e9).toFixed(3) + "s";
+  }
+
+  function chip(sev, label) {
+    var glyph = sev === "info" ? "●" : sev === "count" || sev === "muted" ? "" : "▲";
+    return '<span class="chip ' + sev + '">' +
+      (glyph ? '<span class="g" aria-hidden="true">' + glyph + "</span>" : "") +
+      esc(label) + "</span>";
+  }
+
+  function renderRec(rec, base, hiddenRule) {
+    var e = rec.e;
+    var d = describe(e);
+    var a = assess(e);
+    var cls = "ev";
+    if (a && a.sev !== "info") cls += " sev-" + a.sev;
+    if (hiddenRule) cls += " hidden-ev";
+    var tag = e.type === "exec" ? "EXEC" : e.type === "file" ? "FILE" : "NET";
+
+    var marks = [];
+    if (rec.n > 1) marks.push(chip("count", "×" + rec.n));
+    if (a) marks.push(chip(a.sev, a.label));
+    if (hiddenRule) marks.push(chip("muted", "hidden: " + hiddenRule.name.toLowerCase()));
+
+    var timeCell = esc(relTime(e.ts, base));
+    if (rec.n > 1 && rec.last !== e.ts) {
+      timeCell += '<span class="last">last ' + esc(relTime(rec.last, base)) + "</span>";
+    }
+
+    return '<div class="' + cls + '">' +
+      '<div class="t">' + timeCell + "</div>" +
+      '<div class="tag ' + esc(e.type) + '">' + tag + "</div>" +
+      '<div class="body">' +
+        '<div><span class="verb">' + esc(d.verb) + '</span> <span class="subject">' +
+          esc(d.subject) + "</span></div>" +
+        '<div class="meta">' + metaLine(rec) + "</div>" +
+      "</div>" +
+      '<div class="marks">' + marks.join("") + "</div>" +
+    "</div>";
+  }
+
+  function renderTimeline(part, base) {
+    var recs = collapse(part.kept).map(function (r) { return { rec: r, rule: null }; });
+
+    if (showHidden) {
+      var byRule = {};
+      part.hidden.forEach(function (h) {
+        (byRule[h.rule.id] = byRule[h.rule.id] || { rule: h.rule, list: [] }).list.push(h.e);
+      });
+      Object.keys(byRule).forEach(function (k) {
+        collapse(byRule[k].list).forEach(function (r) {
+          recs.push({ rec: r, rule: byRule[k].rule });
+        });
+      });
+      recs.sort(function (a, b) { return a.rec.e.ts - b.rec.e.ts; });
+    }
+
+    if (!recs.length) return '<div class="empty">Nothing left after the current filters.</div>';
+    return recs.map(function (x) { return renderRec(x.rec, base, x.rule); }).join("");
+  }
+
+  function renderChains(part, base) {
+    var list = showHidden
+      ? part.kept.concat(part.hidden.map(function (h) { return h.e; }))
+          .sort(function (a, b) { return a.ts - b.ts; })
+      : part.kept;
+
+    if (!list.length) return '<div class="empty">Nothing left after the current filters.</div>';
+
+    var hiddenSet = {};
+    part.hidden.forEach(function (h) { hiddenSet[h.e.ts + "|" + h.e.pid + "|" + h.e.type] = h.rule; });
+
+    return buildChains(list).map(function (g) {
+      var lead = g.events[0];
+      var name = lead.comm || "pid " + g.root;
+      var nPids = Object.keys(g.pids).length;
+
+      var marks = [];
+      if (g.flags.secret) marks.push(chip("critical", "Read a secret"));
+      if (g.flags.staged) marks.push(chip("serious", "Staged a file"));
+      if (g.flags.net) marks.push(chip(g.flags.tool ? "warning" : "info", "Connected out"));
+      if (g.flags.tool) marks.push(chip("warning", "Shell / downloader"));
+
+      var verdict = g.score >= 2
+        ? chip("critical", "Attack chain — " + g.score + " of 3 behaviours")
+        : g.score === 1 ? chip("warning", "Worth a look") : "";
+
+      var recs = collapse(g.events);
+
+      return '<section class="chain' + (g.score >= 2 ? " flagged" : "") + '">' +
+        '<div class="chain-head">' +
+          '<span class="chain-title">' + esc(name) + "</span>" +
+          '<span class="chain-sub">root pid ' + esc(g.root) + " &middot; " +
+            nPids + (nPids === 1 ? " process" : " processes") + " &middot; " +
+            g.events.length + (g.events.length === 1 ? " event" : " events") + "</span>" +
+          '<span class="spacer"></span>' +
+          marks.join(" ") + " " + verdict +
+        "</div>" +
+        recs.map(function (r) {
+          var k = r.e.ts + "|" + r.e.pid + "|" + r.e.type;
+          return renderRec(r, base, hiddenSet[k] || null);
+        }).join("") +
+      "</section>";
+    }).join("");
+  }
+
+  function renderStats(part) {
+    // Counted over what survives the noise rules, not the raw stream: the tiles
+    // sit next to "Noise hidden" and have to agree with it. Counting raw events
+    // meant one `ps` sweep left "Secrets read" red in the hundreds while the
+    // timeline below showed a single real one.
+    var execs = 0, writes = 0, secrets = 0, nets = 0;
+    part.kept.forEach(function (e) {
+      if (e.type === "exec") execs++;
+      else if (e.type === "net") nets++;
+      else if (e.type === "file") {
+        if (e.reason === "secret_read") secrets++; else writes++;
+      }
+    });
+    var chains = buildChains(part.kept).filter(function (g) { return g.score >= 2; }).length;
+
+    var tiles = [
+      { n: execs, k: "Processes run" },
+      { n: writes, k: "Files written" },
+      { n: secrets, k: "Secrets read", flag: secrets > 0 },
+      { n: nets, k: "Connections out" },
+      { n: part.hidden.length, k: "Noise hidden", dim: true },
+      { n: chains, k: "Chains flagged", flag: chains > 0 }
+    ];
+
+    $("stats").innerHTML = tiles.map(function (t) {
+      return '<div class="stat' + (t.flag ? " flag" : t.dim ? " dim" : "") + '">' +
+        '<span class="n">' + t.n + "</span>" +
+        '<span class="k">' + t.k + "</span>" +
+      "</div>";
+    }).join("");
+  }
+
+  function renderRules(part) {
+    var counts = {};
+    // Count against every enabled rule's own attribution, plus a dry-run count
+    // for disabled rules so switching one on has a predictable effect.
+    NOISE_RULES.forEach(function (r) { counts[r.id] = 0; });
+    part.hidden.forEach(function (h) { counts[h.rule.id]++; });
+
+    var disabledDry = {};
+    NOISE_RULES.forEach(function (r) {
+      if (ruleOn[r.id]) return;
+      var n = 0;
+      part.kept.forEach(function (e) { if (!immune(e) && r.test(e)) n++; });
+      disabledDry[r.id] = n;
+    });
+
+    $("rules").innerHTML = NOISE_RULES.map(function (r) {
+      var n = ruleOn[r.id] ? counts[r.id] : disabledDry[r.id];
+      var label = ruleOn[r.id]
+        ? (n ? n + " hidden" : "nothing matched")
+        : (n ? n + " would be hidden" : "nothing matched");
+      return '<label class="rule">' +
+        '<input type="checkbox" data-rule="' + esc(r.id) + '"' +
+          (ruleOn[r.id] ? " checked" : "") + " />" +
+        '<span class="rt">' +
+          '<span class="rn">' + esc(r.name) +
+            ' <span class="rc">' + esc(label) + "</span></span>" +
+          '<span class="rw">' + esc(r.why) + "</span>" +
+        "</span>" +
+      "</label>";
+    }).join("");
+
+    Array.prototype.forEach.call($("rules").querySelectorAll("[data-rule]"), function (cb) {
+      cb.addEventListener("change", function () {
+        ruleOn[cb.getAttribute("data-rule")] = cb.checked;
+        render();
+      });
+    });
+  }
+
+  function render() {
+    var filtered = afterUserFilters();
+    var part = partition(filtered);
+    var base = events.length ? Number(events[0].ts) : 0;
+
+    renderStats(part);
+    renderRules(part);
+
+    var keptRecs = collapse(part.kept).length;
+    var folded = part.kept.length - keptRecs;
+
+    $("collapseCount").textContent = folded > 0
+      ? folded + " row" + (folded === 1 ? "" : "s") + " folded"
+      : "nothing to fold";
+
+    $("noiseSummary").textContent = part.hidden.length
+      ? part.hidden.length + " of " + filtered.length + " events hidden"
+      : "nothing suppressed";
+
+    var pct = filtered.length
+      ? Math.round((part.hidden.length / filtered.length) * 100) : 0;
+    $("floor").innerHTML = filtered.length
+      ? "Showing <b>" + keptRecs + "</b> row" + (keptRecs === 1 ? "" : "s") +
+        " from <b>" + part.kept.length + "</b> event" + (part.kept.length === 1 ? "" : "s") +
+        " &middot; <b>" + part.hidden.length + "</b> suppressed as noise (" + pct + "%)" +
+        (folded ? " &middot; <b>" + folded + "</b> folded as repeats" : "")
+      : "";
+
+    $("out").innerHTML = view === "chains"
+      ? renderChains(part, base)
+      : renderTimeline(part, base);
+  }
+
+  // --- wiring --------------------------------------------------------------
+
+  function load(text, collapseInput, source) {
+    var r = parse(text);
+    events = r.events;
+    $("note").innerHTML = (source ? esc(source) + " &middot; " : "") + (events.length
+      ? events.length + " events parsed" +
+        (r.skipped ? " &middot; " + r.skipped + " lines skipped" : "")
+      : (r.skipped ? "No valid events — " + r.skipped + " lines skipped" : "no events"));
+    if (collapseInput && events.length) {
+      $("inputBox").open = false;
+      $("noiseBox").open = true;
+    }
+    render();
+  }
+
+  // A capture file straight off the sensor (`captures/sensors-*.jsonl`), from
+  // the picker or a drop. Rendering is driven by the file's text, not by the
+  // textarea, so a capture too big to sit in the box still renders in full.
+  var TEXTAREA_LIMIT = 2 * 1024 * 1024;
+  function loadFile(file) {
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      var text = String(reader.result || "");
+      $("raw").value = text.length > TEXTAREA_LIMIT ? "" : text;
+      load(text, true, file.name);
+    };
+    reader.onerror = function () {
+      $("note").textContent = "Could not read " + file.name;
+    };
+    reader.readAsText(file);
+  }
+
+  $("openBtn").addEventListener("click", function () { $("fileInput").click(); });
+  $("fileInput").addEventListener("change", function (ev) {
+    loadFile(ev.target.files && ev.target.files[0]);
+    // Reset so picking the same file again — a re-run that overwrote it, say —
+    // still fires `change`.
+    ev.target.value = "";
+  });
+
+  // Drag and drop anywhere on the page. `dragenter`/`dragleave` fire per element
+  // as the pointer crosses children, so count depth rather than clearing on the
+  // first leave, which would flicker the overlay off mid-drag.
+  var dragDepth = 0;
+  function hasFiles(ev) {
+    var types = ev.dataTransfer && ev.dataTransfer.types;
+    return !!types && Array.prototype.indexOf.call(types, "Files") >= 0;
+  }
+  function endDrag() {
+    dragDepth = 0;
+    document.body.classList.remove("dragging");
+  }
+  document.addEventListener("dragenter", function (ev) {
+    if (!hasFiles(ev)) return;
+    dragDepth++;
+    document.body.classList.add("dragging");
+  });
+  document.addEventListener("dragover", function (ev) {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();            // without this the browser opens the file instead
+    ev.dataTransfer.dropEffect = "copy";
+  });
+  document.addEventListener("dragleave", function (ev) {
+    if (!hasFiles(ev)) return;
+    if (--dragDepth <= 0) endDrag();
+  });
+  document.addEventListener("drop", function (ev) {
+    if (!hasFiles(ev)) return;
+    ev.preventDefault();
+    endDrag();
+    loadFile(ev.dataTransfer.files[0]);
+  });
+
+  $("parseBtn").addEventListener("click", function () { load($("raw").value, true); });
+  $("sampleBtn").addEventListener("click", function () {
+    $("raw").value = SAMPLE;
+    load(SAMPLE, true, "sample");
+  });
+  $("clearBtn").addEventListener("click", function () {
+    $("raw").value = "";
+    $("fileInput").value = "";
+    events = [];
+    $("note").textContent = "";
+    $("inputBox").open = true;
+    render();
+  });
+
+  $("raw").addEventListener("paste", function () {
+    setTimeout(function () { load($("raw").value, true); }, 0);
+  });
+
+  $("collapseRepeats").addEventListener("change", function (ev) {
+    collapseRepeats = ev.target.checked;
+    render();
+  });
+  $("showHidden").addEventListener("change", function (ev) {
+    showHidden = ev.target.checked;
+    render();
+  });
+  $("notableOnly").addEventListener("change", function (ev) {
+    notableOnly = ev.target.checked;
+    render();
+  });
+  $("customPat").addEventListener("input", function (ev) {
+    customPatterns = ev.target.value.split(",")
+      .map(function (s) { return s.trim().toLowerCase(); })
+      .filter(function (s) { return s.length > 0; });
+    render();
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (b) {
+    b.addEventListener("click", function () {
+      view = b.getAttribute("data-view");
+      Array.prototype.forEach.call(document.querySelectorAll("[data-view]"), function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      render();
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-filter]"), function (b) {
+    b.addEventListener("click", function () {
+      filter = b.getAttribute("data-filter");
+      Array.prototype.forEach.call(document.querySelectorAll("[data-filter]"), function (o) {
+        o.setAttribute("aria-pressed", String(o === b));
+      });
+      render();
+    });
+  });
+
+  $("raw").value = SAMPLE;
+  load(SAMPLE, false, "sample");
+})();
+</script>

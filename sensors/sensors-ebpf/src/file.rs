@@ -13,7 +13,7 @@
 //!    completely unseen — the archetypal supply-chain credential theft.
 
 use aya_ebpf::{helpers, macros::tracepoint, programs::TracePointContext};
-use sensors_common::{EVENT_FILE, Event, FILE_SECRET_READ, FILE_WRITE};
+use sensors_common::{AT_FDCWD, EVENT_FILE, Event, FILE_SECRET_READ, FILE_WRITE};
 
 use crate::{EVENTS, MUTED, PID_PARENT};
 
@@ -29,6 +29,13 @@ fn is_write(flags: i32) -> bool {
     (flags & O_ACCMODE) != O_RDONLY || (flags & (O_CREAT | O_TRUNC | O_APPEND)) != 0
 }
 
+// Indexes `path` through `get()` rather than `path[i]`. `path` has a runtime
+// length (whatever the probe-read returned), so LLVM cannot prove a direct index
+// is in bounds and emits a bounds-check panic. Our panic handler diverges, so
+// that cold block ends in a `call` with no `exit` after it — and if LLVM parks it
+// last, the program's final instruction is a call and the verifier rejects the
+// whole program at load with "last insn is not an exit or jmp". `get()` has no
+// panic path at all. Same reasoning in `ends_with` and in process.rs's `is_vpnip`.
 #[inline(always)]
 fn starts_with(path: &[u8], prefix: &[u8]) -> bool {
     if path.len() < prefix.len() {
@@ -36,8 +43,9 @@ fn starts_with(path: &[u8], prefix: &[u8]) -> bool {
     }
     let mut i = 0;
     while i < prefix.len() {
-        if path[i] != prefix[i] {
-            return false;
+        match path.get(i) {
+            Some(&b) if b == prefix[i] => {}
+            _ => return false,
         }
         i += 1;
     }
@@ -47,7 +55,8 @@ fn starts_with(path: &[u8], prefix: &[u8]) -> bool {
 // Pseudo-filesystem churn — shells hammer /dev/null on every prompt, and
 // /proc//sys are constant background reads/writes with no supply-chain value.
 // Dropped kernel-side so they never hit the ring buffer. /dev/shm is kept
-// deliberately: it's a real place attackers stage payloads.
+// deliberately: it's a real place attackers stage payloads, and a secret read of
+// /proc/<pid>/environ is classified in `try_open` before this filter runs.
 #[inline(always)]
 fn is_noise_path(path: &[u8]) -> bool {
     (starts_with(path, b"/dev/") && !starts_with(path, b"/dev/shm/"))
@@ -61,13 +70,15 @@ fn ends_with(path: &[u8], suffix: &[u8]) -> bool {
     if pl < sl {
         return false;
     }
-    // off + i < pl for all i < sl, so every index is in bounds — keeps the
-    // verifier happy without a dynamic-bounds scan over the whole 256-byte buf.
+    // off + i < pl holds for all i < sl, but LLVM can't prove it for a
+    // runtime-length slice — index via `get()` so no panic path is emitted (see
+    // `starts_with`).
     let off = pl - sl;
     let mut i = 0;
     while i < sl {
-        if path[off + i] != suffix[i] {
-            return false;
+        match path.get(off + i) {
+            Some(&b) if b == suffix[i] => {}
+            _ => return false,
         }
         i += 1;
     }
@@ -119,6 +130,11 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
     }
 
     let flags = unsafe { ctx.read_at::<i64>(32) }.unwrap_or(0) as i32;
+    // arg 0. Only meaningful for a relative `path`, but cheap enough to always
+    // carry: without it userspace cannot tell an open relative to the cwd from
+    // one relative to some other directory fd, and resolving the second against
+    // the cwd invents a path that was never opened.
+    let dfd = unsafe { ctx.read_at::<i64>(16) }.unwrap_or(AT_FDCWD as i64) as i32;
     let filename_ptr = match unsafe { ctx.read_at::<u64>(24) } {
         Ok(p) => p as *const u8,
         Err(_) => return Ok(0),
@@ -141,6 +157,7 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
         event.header.comm = comm;
     }
     event.payload.file.flags = flags;
+    event.payload.file.dfd = dfd;
 
     // filename is a userspace pointer here (not a kernel __data_loc like exec).
     let path = match unsafe {
@@ -150,17 +167,21 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
         Err(_) => return Ok(0),
     };
 
-    // Drop pseudo-filesystem noise before anything else.
-    if is_noise_path(path) {
-        return Ok(0);
-    }
-
     // Emit writes (any path) and reads of watchlisted secrets; drop the rest
     // (the read firehose). A write to a secret path still reads as a write.
-    let reason = if is_write(flags) {
-        FILE_WRITE
-    } else if is_secret_path(path) {
+    //
+    // The secret-read test runs *before* the noise filter, not after: the
+    // watchlist's `/environ` entry only ever matches `/proc/<pid>/environ`, so
+    // dropping pseudo-filesystems first would make that entry unreachable and
+    // env-var secret theft invisible. No other watchlisted suffix lives under
+    // /dev, /proc or /sys, so nothing else changes — writes to those paths are
+    // still dropped as noise.
+    let reason = if !is_write(flags) && is_secret_path(path) {
         FILE_SECRET_READ
+    } else if is_noise_path(path) {
+        return Ok(0);
+    } else if is_write(flags) {
+        FILE_WRITE
     } else {
         return Ok(0);
     };

@@ -26,10 +26,15 @@ fn is_vpnip(path: &[u8]) -> bool {
     if path.len() != VPNIP.len() {
         return false;
     }
+    // `get()` rather than `path[i]`: a direct index on this runtime-length slice
+    // makes LLVM emit a bounds-check panic, whose diverging cold block can land
+    // last and leave the program ending in a `call` — which the verifier rejects
+    // outright. See the note in file.rs's `starts_with`.
     let mut i = 0;
     while i < VPNIP.len() {
-        if path[i] != VPNIP[i] {
-            return false;
+        match path.get(i) {
+            Some(&b) if b == VPNIP[i] => {}
+            _ => return false,
         }
         i += 1;
     }
