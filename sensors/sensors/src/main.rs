@@ -72,6 +72,23 @@ async fn main() -> anyhow::Result<()> {
     net_prog.load()?;
     net_prog.attach("sock", "inet_sock_set_state")?;
 
+    // UDP: the destination comes from the syscall's own sockaddr, so the fd has
+    // to be classified at socket() time — attach that pair before the hooks that
+    // consume it, or the first datagrams of a run go unattributed.
+    for (name, category, event) in [
+        ("socket_enter", "syscalls", "sys_enter_socket"),
+        ("socket_exit", "syscalls", "sys_exit_socket"),
+        ("udp_connect", "syscalls", "sys_enter_connect"),
+        ("udp_sendto", "syscalls", "sys_enter_sendto"),
+        ("udp_sendmsg", "syscalls", "sys_enter_sendmsg"),
+        ("udp_sendmmsg", "syscalls", "sys_enter_sendmmsg"),
+        ("close_enter", "syscalls", "sys_enter_close"),
+    ] {
+        let prog: &mut TracePoint = ebpf.program_mut(name).unwrap().try_into()?;
+        prog.load()?;
+        prog.attach(category, event)?;
+    }
+
     // Every event is written to a capture file as well as stdout, so a session
     // is always recoverable without having remembered to pipe stdout somewhere.
     // Buffered — the flush happens on the way out of the shutdown path below.
@@ -148,8 +165,10 @@ fn drain(
         let Some(event) = Event::from_bytes(&item) else {
             continue;
         };
+        // `None` means the normalizer dropped it — suppressed noise or an
+        // event kind it does not know. It logs its own reason; here it is just
+        // an event that produces no line.
         let Some(line) = normalizer.normalize(&event) else {
-            warn!("unknown event kind {}", event.header.kind);
             continue;
         };
         println!("{line}");

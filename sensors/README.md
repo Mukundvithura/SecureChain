@@ -39,6 +39,9 @@ Fields that could not be established are omitted rather than zero-filled.
 
 ## Build & Run
 
+For the scripted demo, `../demo/run_demo.sh` does all of the below in one
+command. To drive the sensors yourself:
+
 Build as your normal user, then run only the sensor as root:
 
 ```shell
@@ -48,6 +51,72 @@ sudo ./target/debug/sensors
 
 A build script compiles the eBPF object and embeds it in the binary, so the
 binary is self-contained — nothing else needs to be on disk at run time.
+
+## Network coverage
+
+`inet_sock_set_state` is a TCP state machine, so it reports outbound TCP and
+nothing else. UDP — DNS above all — is picked up separately, from the `sockaddr`
+the syscall itself was handed:
+
+| Hook | Catches |
+|------|---------|
+| `sock/inet_sock_set_state` | outbound TCP, at the transition into `SYN_SENT` |
+| `syscalls/sys_enter_connect` | connected UDP — the path glibc's resolver takes |
+| `syscalls/sys_enter_sendto` | unconnected datagrams: `dig`, `nslookup`, `nc -u` |
+
+Both UDP hooks also fire for TCP sockets, so `sys_enter_socket`/`sys_exit_socket`
+record which fds were created as `AF_INET`/`SOCK_DGRAM` and only those reach the
+emit path. A TCP connection is therefore still reported exactly once, by the
+`inet_sock_set_state` sensor.
+
+Tell them apart by `proto`: `6` is TCP, `17` is UDP. A UDP record carries no
+`saddr`/`sport` — the syscall has not yet been through the stack that assigns
+them.
+
+```shell
+sudo ./target/debug/sensors 2>/dev/null | jq -c 'select(.proto==17)'
+```
+
+## Noise suppression
+
+`openat` is a firehose and a graphical desktop never stops writing, so the
+sensors filter in two tiers. Both drop **writes only** — an `exec`, a `connect`
+and a `secret_read` are never suppressed.
+
+**In-kernel** (`sensors-ebpf/src/file.rs`), on the raw syscall argument, before
+anything reaches the ring buffer:
+
+| Dropped | Why |
+|---------|-----|
+| non-write opens | the read firehose; a watchlisted secret read is kept |
+| `/dev/*` (not `/dev/shm/*`), `/proc/*`, `/sys/*` | pseudo-filesystem churn |
+| `uid_map`, `gid_map`, `setgroups` | user-namespace setup; every sandbox launch writes three |
+| `O_TMPFILE` opens | the path names a *directory*, not a file — there is nothing to attribute |
+
+**In the normalizer** (`sensors/src/normalize.rs`), on the *resolved* path — the
+kernel only ever sees the raw `openat` argument, so an open made relative to a
+directory fd (`openat(dfd, "uid_map", …)`) carries no `/proc/` prefix for it to
+match and can only be recognised after resolution:
+
+| Dropped | Why |
+|---------|-----|
+| pseudo-filesystems, re-checked | catches the relative opens the kernel tier cannot see |
+| `gdk-pixbuf-*` temporaries | thumbnail decoding; 209 of them from opening one terminal window |
+| `*/gvfs-metadata/*`, `*/dconf/user` | desktop bookkeeping |
+| `*/.mozilla/*`, `*/.cache/mozilla/*` | browser profile and telemetry |
+| `/run/systemd/journal/*`, `/var/lib/xkb/*` | journal streams, compiled keymaps |
+| the sensor's own pid | a run should not observe itself |
+
+Together these remove **~58%** of the events an idle desktop session produces,
+and **91%** of its file writes.
+
+Everything above is what *any* Linux desktop generates. Host-specific churn
+belongs in configuration instead — `SECRISK_MUTE` takes comma-separated
+substrings, matched against the resolved path:
+
+```shell
+sudo -E SECRISK_MUTE=/.claude/,/.cargo/,/target/debug/ ./target/debug/sensors
+```
 
 ## Captures
 

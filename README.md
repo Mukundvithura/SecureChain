@@ -52,6 +52,38 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 
 ---
 
+## Quick Start
+
+The demo runs the whole pipeline — sensors, a simulated compromised package,
+and the reconstructed attack chain — in one command:
+
+```shell
+./demo/run_demo.sh
+```
+
+It asks for sudo once (loading eBPF programs needs root), builds the sensors on
+first run, and prints the chain it caught:
+
+```
+  00:05:57.258  EXEC         /tmp/secrisk-demo/npm-install.sh
+  00:05:57.264  EXEC         /usr/bin/sh
+  00:05:57.272  EXEC         /usr/bin/cat
+  00:05:57.276  SECRET_READ  /tmp/secrisk-demo/home/.ssh/id_rsa
+  00:05:57.277  WRITE        /dev/shm/.update-cache
+  00:05:57.283  EXEC         /usr/bin/curl
+  00:05:57.350  CONNECT      104.20.23.154:80
+```
+
+Every step shares one process lineage — that link is what the correlation engine
+will consume. The capture is kept at `sensors/captures/demo-<timestamp>.jsonl`;
+open [`demo/event_viewer.html`](demo/event_viewer.html) and drop the file on it
+for a readable view.
+
+To watch a real workload instead, run the sensors on their own and use the
+machine normally — see [`sensors/README.md`](sensors/README.md).
+
+---
+
 ## Technology Stack
 
 | Layer                  | Technology                        |
@@ -87,6 +119,11 @@ See [`docs/implementation_plan.md`](docs/implementation_plan.md) for detailed ph
 
 ```
 SecRisk/
+│
+├── demo/
+│   ├── run_demo.sh                # one-command demo: sensors + attack + chain
+│   ├── supply_chain_demo.sh       # the simulated compromised npm postinstall
+│   └── event_viewer.html          # drop a capture on it to read it
 │
 ├── docs/
 │   ├── problem_statement.md       # Problem definition and objectives

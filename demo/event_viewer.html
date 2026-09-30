@@ -1322,6 +1322,20 @@
   });
 
   $("parseBtn").addEventListener("click", function () { load($("raw").value, true); });
+
+  // Render whatever lands in the box, without waiting for the button. The box
+  // starts pre-filled with the sample, so pasting a capture over it and seeing
+  // the sample's events still on screen reads as "the capture has no network
+  // traffic" rather than "nothing was loaded" — which is exactly how it was
+  // misread. Debounced so a large paste parses once, not per keystroke.
+  var pasteTimer = null;
+  $("raw").addEventListener("input", function () {
+    if (pasteTimer) clearTimeout(pasteTimer);
+    pasteTimer = setTimeout(function () {
+      var text = $("raw").value;
+      if (text.trim()) load(text, true);
+    }, 200);
+  });
   $("sampleBtn").addEventListener("click", function () {
     $("raw").value = SAMPLE;
     load(SAMPLE, true, "sample");

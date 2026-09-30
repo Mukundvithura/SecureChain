@@ -23,6 +23,12 @@ const O_RDONLY: i32 = 0o0;
 const O_CREAT: i32 = 0o100;
 const O_TRUNC: i32 = 0o1000;
 const O_APPEND: i32 = 0o2000;
+// `__O_TMPFILE | O_DIRECTORY`. The `path` argument of such an open names the
+// *directory* the anonymous inode is created in, not a file — there is no
+// filename to attribute the write to, and the inode disappears unless it is
+// later linked. Emitting these produces a stream of identical "wrote /tmp"
+// records that say nothing about what was written.
+const O_TMPFILE: i32 = 0o20200000;
 
 #[inline(always)]
 fn is_write(flags: i32) -> bool {
@@ -62,6 +68,16 @@ fn is_noise_path(path: &[u8]) -> bool {
     (starts_with(path, b"/dev/") && !starts_with(path, b"/dev/shm/"))
         || starts_with(path, b"/proc/")
         || starts_with(path, b"/sys/")
+}
+
+// User-namespace setup files. These only ever live at `/proc/<pid>/`, but
+// `bwrap` (and every other sandbox launcher) opens them through a directory fd
+// as bare relative names, so `is_noise_path`'s `/proc/` prefix never sees them
+// and they reach userspace as writes. Every `bwrap` launch on a desktop —
+// thumbnailers, flatpaks, portal helpers — emits three of these.
+#[inline(always)]
+fn is_ns_setup(path: &[u8]) -> bool {
+    ends_with(path, b"uid_map") || ends_with(path, b"gid_map") || ends_with(path, b"setgroups")
 }
 
 #[inline(always)]
@@ -178,7 +194,7 @@ fn try_open(ctx: TracePointContext) -> Result<u32, u32> {
     // still dropped as noise.
     let reason = if !is_write(flags) && is_secret_path(path) {
         FILE_SECRET_READ
-    } else if is_noise_path(path) {
+    } else if is_noise_path(path) || is_ns_setup(path) || (flags & O_TMPFILE) == O_TMPFILE {
         return Ok(0);
     } else if is_write(flags) {
         FILE_WRITE

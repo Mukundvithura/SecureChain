@@ -1,0 +1,6 @@
+Terminal 1 — sensors:
+cd ~/SecRisk/sensors
+sudo ./target/debug/sensors
+
+Terminal 2 — the attack:
+~/SecRisk/demo/supply_chain_demo.sh

@@ -29,6 +29,7 @@ use std::{
     fs,
 };
 
+use log::debug;
 use sensors_common::{AT_FDCWD, EVENT_EXEC, EVENT_FILE, EVENT_NET, Event, FILE_SECRET_READ, cstr};
 
 /// Enrichment cached per pid. Bounded because a busy host churns through pids
@@ -46,6 +47,12 @@ pub struct Normalizer {
     clock: Clock,
     users: HashMap<u32, String>,
     procs: ProcTable,
+    /// Our own pid, so the sensor does not report on itself.
+    self_pid: u32,
+    /// Extra substrings from `$SECRISK_MUTE`, suppressed alongside the built-in
+    /// patterns. Keeping the site-specific half in configuration is what lets
+    /// the compiled-in list stay short and defensible.
+    extra_mutes: Vec<String>,
 }
 
 impl Normalizer {
@@ -54,6 +61,8 @@ impl Normalizer {
             clock: Clock::capture(),
             users: load_users(),
             procs: ProcTable::default(),
+            self_pid: std::process::id(),
+            extra_mutes: load_extra_mutes(),
         }
     }
 
@@ -66,6 +75,36 @@ impl Normalizer {
         // It is kept verbatim — it says which part of a process acted — while
         // `exe` below carries the process identity.
         let comm = String::from_utf8_lossy(cstr(&h.comm)).into_owned();
+
+        // The sensor's own activity — the capture file it is writing, most
+        // obviously — is not telemetry about the host. Without this every run
+        // observes itself.
+        if pid == self.self_pid {
+            return None;
+        }
+        let type_name = match kind_name(h.kind) {
+            Some(name) => name,
+            None => {
+                debug!("unknown event kind {}", h.kind);
+                return None;
+            }
+        };
+
+        // Resolve the file payload before anything else, so a suppressed write
+        // costs one readlink and nothing more — no /proc enrichment, no ancestry
+        // walk, no allocation for a record that is about to be dropped.
+        let file_path = if h.kind == EVENT_FILE {
+            // SAFETY: kind == EVENT_FILE guarantees the `file` union variant.
+            let file = unsafe { &event.payload.file };
+            let raw = String::from_utf8_lossy(cstr(&file.path)).into_owned();
+            let path = resolve_path(pid, file.dfd, &raw);
+            if file.reason != FILE_SECRET_READ && self.is_noise(&path) {
+                return None;
+            }
+            Some((path, raw))
+        } else {
+            None
+        };
 
         // An exec is the one point where we learn a process's identity firsthand,
         // and it replaces whatever the pid was before. Record it before anything
@@ -108,7 +147,7 @@ impl Normalizer {
         let epoch_ns = self.clock.epoch_ns(h.timestamp);
         rec.num("ts", epoch_ns);
         rec.str("time", &rfc3339_local(epoch_ns));
-        rec.str("type", kind_name(h.kind)?);
+        rec.str("type", type_name);
         rec.str("action", action_name(event)?);
         rec.num("pid", pid);
         rec.num("ppid", ppid);
@@ -154,8 +193,7 @@ impl Normalizer {
             EVENT_FILE => {
                 // SAFETY: kind == EVENT_FILE guarantees the `file` union variant.
                 let file = unsafe { &event.payload.file };
-                let raw = String::from_utf8_lossy(cstr(&file.path)).into_owned();
-                let path = resolve_path(pid, file.dfd, &raw);
+                let (path, raw) = file_path?;
                 rec.str("path", &path);
                 if path != raw {
                     rec.str("path_raw", &raw);
@@ -174,6 +212,45 @@ impl Normalizer {
             _ => return None,
         }
         Some(rec.finish())
+    }
+
+    /// Whether a resolved write path is background churn rather than telemetry.
+    ///
+    /// Applied to writes only — a `secret_read` is never suppressed, because the
+    /// watchlist's `/proc/<pid>/environ` entry would be the first casualty.
+    ///
+    /// This runs *after* path resolution, which is the point: the kernel-side
+    /// filter in `file.rs` only ever sees the raw `openat` argument, so an open
+    /// made relative to a directory fd (`openat(dfd, "uid_map", …)`) slips past
+    /// its `/proc/` prefix check and can only be recognised here. The two tiers
+    /// are complementary, not redundant — the kernel drops what it can identify
+    /// cheaply, and this catches what only resolution makes visible.
+    fn is_noise(&self, path: &str) -> bool {
+        let base = path.rsplit('/').next().unwrap_or(path);
+
+        // Pseudo-filesystems, re-checked on the resolved path. `/dev/shm` stays
+        // in: it is a real payload staging ground.
+        if path.starts_with("/proc/")
+            || path.starts_with("/sys/")
+            || (path.starts_with("/dev/") && !path.starts_with("/dev/shm/"))
+        {
+            return true;
+        }
+
+        // Desktop-session churn. Every one of these is produced continuously by
+        // a graphical session regardless of what the user is doing, which is
+        // exactly what makes it useless for detection: it has the same rate in a
+        // compromised session as in a clean one. Opening a single terminal
+        // window generated 209 of the thumbnail temporaries alone.
+        let desktop = base.starts_with("gdk-pixbuf-")          // thumbnail decode temporaries
+            || path.contains("/gvfs-metadata/")                // GVFS bookkeeping
+            || path.ends_with("/dconf/user")                   // settings store
+            || path.contains("/.mozilla/")                     // browser profile + telemetry
+            || path.contains("/.cache/mozilla/")               // browser disk cache
+            || path.starts_with("/run/systemd/journal/")       // journal stream sockets
+            || path.starts_with("/var/lib/xkb/");              // compiled keymaps
+
+        desktop || self.extra_mutes.iter().any(|m| path.contains(m.as_str()))
     }
 
     /// `pid` and its parents, nearest first. Stops at pid 0 (the walk ran off the
@@ -416,6 +493,22 @@ fn read_container(pid: u32) -> Option<String> {
     None
 }
 
+/// Extra noise substrings from `$SECRISK_MUTE`, comma-separated. Site-specific
+/// suppression belongs in configuration rather than in the binary: the built-in
+/// list covers what any Linux desktop produces, and this covers what *your* host
+/// produces (an editor's session log, a CI agent's scratch directory).
+///
+///     SECRISK_MUTE=/.claude/,/node_modules/.cache/ sudo -E ./sensors
+fn load_extra_mutes() -> Vec<String> {
+    std::env::var("SECRISK_MUTE")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// uid → name, read once from `/etc/passwd`. First entry wins, so a uid shared
 /// by several names resolves to the canonical one.
 fn load_users() -> HashMap<u32, String> {
@@ -589,6 +682,16 @@ mod tests {
         event
     }
 
+    /// A normalizer that will not filter the test process's own events.
+    /// `event_for_self` attributes events to us on purpose, so that the /proc
+    /// enrichment has something real to read; the self-pid guard would drop
+    /// every one of them.
+    fn normalizer() -> Normalizer {
+        let mut n = Normalizer::new();
+        n.self_pid = 0;
+        n
+    }
+
     /// One field out of a record, as text. Naive about escapes, which no value
     /// in these tests contains.
     fn field(record: &str, key: &str) -> Option<String> {
@@ -606,7 +709,7 @@ mod tests {
         let path = b"/usr/bin/curl";
         unsafe { event.payload.exec.filename[..path.len()].copy_from_slice(path) };
 
-        let record = Normalizer::new().normalize(&event).unwrap();
+        let record = normalizer().normalize(&event).unwrap();
         assert_eq!(field(&record, "type").as_deref(), Some("exec"));
         assert_eq!(field(&record, "action").as_deref(), Some("exec"));
         assert_eq!(field(&record, "path").as_deref(), Some("/usr/bin/curl"));
@@ -631,7 +734,7 @@ mod tests {
             event.payload.file.dfd = AT_FDCWD;
         }
 
-        let record = Normalizer::new().normalize(&event).unwrap();
+        let record = normalizer().normalize(&event).unwrap();
         assert_eq!(field(&record, "action").as_deref(), Some("secret_read"));
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(
@@ -650,7 +753,7 @@ mod tests {
         let path = b"/tmp/staged";
         unsafe { event.payload.file.path[..path.len()].copy_from_slice(path) };
 
-        let record = Normalizer::new().normalize(&event).unwrap();
+        let record = normalizer().normalize(&event).unwrap();
         assert_eq!(field(&record, "action").as_deref(), Some("write"));
         assert_eq!(field(&record, "path").as_deref(), Some("/tmp/staged"));
         assert!(!record.contains("path_raw"), "{record}");
@@ -665,7 +768,7 @@ mod tests {
         event.payload.net.dport = 443;
         event.payload.net.proto = 6;
 
-        let record = Normalizer::new().normalize(&event).unwrap();
+        let record = normalizer().normalize(&event).unwrap();
         assert_eq!(field(&record, "action").as_deref(), Some("connect"));
         assert_eq!(field(&record, "saddr").as_deref(), Some("192.168.159.128"));
         assert_eq!(field(&record, "daddr").as_deref(), Some("93.184.216.34"));
@@ -675,7 +778,77 @@ mod tests {
     #[test]
     fn unknown_event_kind_is_dropped() {
         let event = event_for_self(99);
+        assert!(normalizer().normalize(&event).is_none());
+    }
+
+    #[test]
+    fn suppresses_namespace_setup_opened_through_a_directory_fd() {
+        // The bwrap case: `openat(<fd for /proc/self>, "uid_map", …)`. The raw
+        // argument carries no `/proc/` prefix, so the kernel-side filter cannot
+        // see what it is — only the resolved path gives it away.
+        assert!(normalizer().is_noise("/proc/1234/uid_map"));
+        assert!(normalizer().is_noise("/proc/1234/setgroups"));
+    }
+
+    #[test]
+    fn suppresses_desktop_churn_but_not_payload_staging() {
+        let n = normalizer();
+        assert!(n.is_noise("/tmp/gdk-pixbuf-glycin-tmp.RYQ5T3"));
+        assert!(n.is_noise("/home/u/.local/share/gvfs-metadata/root"));
+        assert!(n.is_noise("/run/user/1000/dconf/user"));
+        assert!(n.is_noise("/home/u/.mozilla/firefox/p.default/datareporting/x"));
+        // /dev/shm is where payloads actually get staged — it must survive the
+        // /dev/ rule, and an ordinary /tmp write must survive the desktop rules.
+        assert!(!n.is_noise("/dev/shm/.update-cache"));
+        assert!(!n.is_noise("/tmp/staged-implant"));
+        assert!(!n.is_noise("/home/u/node_modules/left-pad/postinstall.sh"));
+    }
+
+    #[test]
+    fn secret_reads_are_never_suppressed() {
+        // /proc/<pid>/environ is both a watchlisted secret and a pseudo-fs path.
+        // The suppression must not reach it, or env-var theft goes unseen.
+        let mut event = event_for_self(EVENT_FILE);
+        let path = b"/proc/1/environ";
+        unsafe {
+            event.payload.file.path[..path.len()].copy_from_slice(path);
+            event.payload.file.reason = FILE_SECRET_READ;
+        }
+        let record = normalizer().normalize(&event).unwrap();
+        assert_eq!(field(&record, "action").as_deref(), Some("secret_read"));
+        // …while a *write* to the same place is dropped.
+        let mut write = event_for_self(EVENT_FILE);
+        let path = b"/proc/1/uid_map";
+        unsafe {
+            write.payload.file.path[..path.len()].copy_from_slice(path);
+            write.payload.file.flags = 1; // O_WRONLY
+        }
+        assert!(normalizer().normalize(&write).is_none());
+    }
+
+    #[test]
+    fn the_sensor_does_not_report_on_itself() {
+        let mut event = event_for_self(EVENT_EXEC);
+        let path = b"/usr/bin/curl";
+        unsafe { event.payload.exec.filename[..path.len()].copy_from_slice(path) };
+        // A real Normalizer, whose self_pid is this process — the event is ours.
         assert!(Normalizer::new().normalize(&event).is_none());
+    }
+
+    #[test]
+    fn extra_mutes_are_substring_matches() {
+        let mut n = normalizer();
+        n.extra_mutes = vec!["/.claude/".to_string()];
+        assert!(n.is_noise("/home/u/.claude/history.jsonl"));
+        assert!(!n.is_noise("/home/u/claude/history.jsonl"));
+    }
+
+    #[test]
+    fn parses_the_mute_list_from_the_environment() {
+        unsafe { std::env::set_var("SECRISK_MUTE", " /a/ , ,/b/ ") };
+        assert_eq!(load_extra_mutes(), vec!["/a/", "/b/"]);
+        unsafe { std::env::remove_var("SECRISK_MUTE") };
+        assert!(load_extra_mutes().is_empty());
     }
 
     #[test]
