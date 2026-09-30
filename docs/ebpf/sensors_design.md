@@ -42,7 +42,7 @@ sensors/
 │       ├── main.rs       # maps (EVENTS, PID_PARENT, MUTED) + module wiring
 │       ├── process.rs    # sched_process_exec + sched_process_fork  → EVENT_EXEC
 │       ├── file.rs       # sys_enter_openat                          → EVENT_FILE
-│       └── network.rs    # inet_sock_set_state                       → EVENT_NET
+│       └── network.rs    # inet_sock_set_state (TCP); connect/sendto (UDP) → EVENT_NET
 └── Cargo.toml            # workspace; aya deps point at git
 ```
 
@@ -160,6 +160,8 @@ other than the cwd cannot be told apart from one relative to the cwd.
 | Program | Tracepoint | Role |
 |---------|-----------|------|
 | `network_monitor` | `sock/inet_sock_set_state` | Emit `EVENT_NET` for outbound TCP connects |
+| *(UDP programs)* | `syscalls/sys_enter_connect`, `syscalls/sys_enter_sendto` | Emit `EVENT_NET` (`proto=17`) for outbound UDP, incl. DNS |
+| *(socket tracking)* | `syscalls/sys_enter_socket`, `syscalls/sys_exit_socket` | Record which fds are `AF_INET`/`SOCK_DGRAM`, so the UDP hooks skip TCP sockets |
 
 `inet_sock_set_state` fires on every TCP state change; the transition **into
 `TCP_SYN_SENT`** is a process actively initiating an outbound connection — the
@@ -178,6 +180,15 @@ byte order (the kernel `ntohs`-es them) and addresses are raw network-order byte
 > "where is this phoning home" — is correct. A real source port would require
 > reading `struct sock` via CO-RE (avoided) or a softirq-context later state
 > (wrong pid).
+
+**UDP.** `inet_sock_set_state` is a TCP state machine and never sees UDP, so
+datagrams are read from the `sockaddr` handed to `connect` (the path glibc's
+resolver takes) and `sendto` (`dig`, `nslookup`, `nc -u`). Both syscalls also
+fire for TCP sockets; the `UDP_SOCKS` map, filled at `socket()` time, lets only
+datagram sockets through, so a TCP connection is still reported exactly once. A
+UDP record carries no `saddr`/`sport`. See `network.rs` for why a `udp_sendmsg`
+kprobe was not used, and [`sensors/README.md`](../../sensors/README.md#network-coverage)
+for the coverage table.
 
 ---
 
