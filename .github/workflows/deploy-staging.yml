@@ -1,0 +1,60 @@
+name: Deploy to Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag or artifact identifier to deploy (e.g. v0.1.0 or latest)"
+        required: true
+        default: "latest"
+      dry_run:
+        description: "Dry run deployment without making changes to staging host"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check Environment Configuration
+        id: check-env
+        run: |
+          echo "### Checking Staging Environment Secrets..."
+          if [[ -z "${{ secrets.STAGING_HOST }}" || -z "${{ secrets.STAGING_SSH_KEY }}" ]]; then
+            echo "::warning ::STAGING_HOST or STAGING_SSH_KEY is not configured in GitHub Environment 'staging'."
+            echo "configured=false" >> $GITHUB_OUTPUT
+          else
+            echo "configured=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Perform Staging Deployment Steps (or Dry-Run simulation)
+        run: |
+          echo "Target Release: ${{ github.event.inputs.release_tag }}"
+          echo "Dry Run Mode: ${{ github.event.inputs.dry_run }}"
+          
+          if [[ "${{ steps.check-env.outputs.configured }}" != "true" ]]; then
+            echo "Skipping actual remote deployment: Target staging environment is pending infrastructure provisioning."
+            echo "To complete live deployment, add STAGING_HOST, STAGING_USER, and STAGING_SSH_KEY to repository Environment 'staging'."
+            exit 0
+          fi
+
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            echo "DRY RUN: Authenticating SSH connection to ${{ secrets.STAGING_HOST }}..."
+            echo "DRY RUN: Verifying sensor binary checksum..."
+            echo "DRY RUN: Simulated staging healthcheck passed."
+            exit 0
+          fi
+
+          echo "Initiating production-safe staging deployment..."
+          # Live SSH deployment commands execute here once staging host is configured

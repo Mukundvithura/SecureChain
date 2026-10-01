@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    working-directory: sensors
+
+jobs:
+  validate-tag:
+    name: Validate Semantic Version Tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate tag format
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Error: Tag '$TAG' does not conform to semver (e.g. v1.0.0, v1.0.0-rc1)"
+            exit 1
+          fi
+          echo "Tag $TAG is valid."
+
+  build-and-release:
+    name: Build & Publish Release
+    needs: validate-tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Build release sensor binary
+        run: cargo build --package sensors --release
+
+      - name: Package Release Assets
+        run: |
+          VERSION="${{ github.ref_name }}"
+          PKG_NAME="securechain-sensors-${VERSION}-linux-x86_64"
+          TAR_NAME="${PKG_NAME}.tar.gz"
+          mkdir -p dist/${PKG_NAME}
+          
+          # Copy sensor binary
+          cp target/release/sensors dist/${PKG_NAME}/
+          
+          # Copy documentation and licenses
+          cp README.md dist/${PKG_NAME}/README_sensors.md
+          cp LICENSE-APACHE dist/${PKG_NAME}/
+          cp LICENSE-MIT dist/${PKG_NAME}/
+          cp LICENSE-GPL2 dist/${PKG_NAME}/
+          
+          # Copy demo runners
+          mkdir -p dist/${PKG_NAME}/demo
+          cp ../demo/run_demo.sh dist/${PKG_NAME}/demo/
+          cp ../demo/supply_chain_demo.sh dist/${PKG_NAME}/demo/
+          cp ../demo/event_viewer.html dist/${PKG_NAME}/demo/
+          
+          cd dist
+          tar -czvf ${TAR_NAME} ${PKG_NAME}
+          sha256sum ${TAR_NAME} > ${TAR_NAME}.sha256
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            sensors/dist/*.tar.gz
+            sensors/dist/*.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
