@@ -50,15 +50,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-
-      - name: Install Rust nightly (for eBPF build.rs)
+      - name: Install Rust nightly with rust-src and clippy
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
+          components: rust-src, clippy
 
       - name: Install bpf-linker
         uses: taiki-e/install-action@v2
@@ -86,10 +81,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Rust nightly (for eBPF build.rs)
+      - name: Install Rust nightly with rust-src
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -122,10 +114,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
 
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Rust nightly (for eBPF compilation)
+      - name: Install Rust nightly with rust-src
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -175,11 +164,12 @@ jobs:
           echo "| Unit Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Compilation (Userspace + eBPF) | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
           
+          # Check if any required job failed, was cancelled, or was skipped unexpectedly
           if [[ "${{ needs.format.result }}" != "success" || \
                 "${{ needs.clippy.result }}" != "success" || \
                 "${{ needs.test.result }}" != "success" || \
                 "${{ needs.build.result }}" != "success" ]]; then
-            echo "One or more core CI checks failed."
+            echo "One or more core CI checks failed or were skipped."
             exit 1
           fi
           echo "All core CI checks succeeded."
