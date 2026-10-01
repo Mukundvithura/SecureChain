@@ -1,0 +1,152 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: sensors
+
+jobs:
+  format:
+    name: Code Formatting (Nightly rustfmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo +nightly fmt --all -- --check
+
+  clippy:
+    name: Clippy Linter (Userspace & Common)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sensors -> target
+
+      - name: Run clippy on userspace and common crates
+        run: cargo clippy --package sensors-common --package sensors -- -D warnings
+
+  test:
+    name: Unit Tests (Userspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sensors -> target
+
+      - name: Run unit tests
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: env
+        run: cargo test --package sensors
+
+  build:
+    name: Userspace & eBPF Compilation
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust nightly (for eBPF compilation)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sensors -> target
+          cache-on-failure: false
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Build release sensor binary
+        run: cargo build --package sensors --release
+
+      - name: Verify release artifact existence
+        run: |
+          test -f target/release/sensors || (echo "sensors binary not found" && exit 1)
+
+      - name: Upload sensor binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sensors-linux-x86_64
+          path: sensors/target/release/sensors
+          if-no-files-found: error
+          retention-days: 7
+
+  ci-summary:
+    name: Core CI Summary
+    needs: [format, clippy, test, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check overall status
+        run: |
+          echo "### Core CI Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | --- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Formatting | ${{ needs.format.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Clippy | ${{ needs.clippy.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.test.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Compilation (Userspace + eBPF) | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${{ needs.format.result }}" != "success" || \
+                "${{ needs.clippy.result }}" != "success" || \
+                "${{ needs.test.result }}" != "success" || \
+                "${{ needs.build.result }}" != "success" ]]; then
+            echo "One or more core CI checks failed."
+            exit 1
+          fi
+          echo "All core CI checks succeeded."

@@ -1,0 +1,88 @@
+name: eBPF Build & Artifact Inspection
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'sensors/sensors-ebpf/**'
+      - 'sensors/sensors-common/**'
+      - 'sensors/Cargo.toml'
+      - 'sensors/Cargo.lock'
+      - '.github/workflows/ebpf-build.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'sensors/sensors-ebpf/**'
+      - 'sensors/sensors-common/**'
+      - 'sensors/Cargo.toml'
+      - 'sensors/Cargo.lock'
+      - '.github/workflows/ebpf-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    working-directory: sensors
+
+jobs:
+  build-ebpf:
+    name: Compile eBPF Bytecode
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies & LLVM tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev binutils
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sensors -> target
+          cache-on-failure: false
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Compile sensors binary and eBPF object
+        run: cargo build --package sensors --release
+
+      - name: Inspect generated eBPF binaries and symbols
+        run: |
+          echo "### Build Artifacts"
+          ls -lh target/release/sensors
+          
+          echo "### Searching for compiled eBPF object in target..."
+          find target -name "sensors" -o -name "*.o" | grep -v "/incremental/" || true
+          
+          echo "### Verifying ELF header on output binary"
+          readelf -h target/release/sensors | head -n 15
+
+      - name: Upload eBPF Sensor Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sensors-ebpf-bundle
+          path: sensors/target/release/sensors
+          if-no-files-found: error
+          retention-days: 14

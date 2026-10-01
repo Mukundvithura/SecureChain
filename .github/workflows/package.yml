@@ -1,0 +1,94 @@
+name: Package Distribution
+
+on:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      artifact_name:
+        description: "Name of the uploaded package tarball"
+        value: ${{ jobs.package.outputs.artifact_name }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: sensors
+
+jobs:
+  package:
+    name: Build & Package Distribution Tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      artifact_name: ${{ steps.bundle.outputs.tar_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust nightly with rust-src
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: sensors -> target
+          cache-on-failure: false
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
+
+      - name: Build release sensor binary
+        run: cargo build --package sensors --release
+
+      - name: Assemble Release Package
+        id: bundle
+        run: |
+          PKG_NAME="securechain-sensors-linux-x86_64"
+          TAR_NAME="${PKG_NAME}.tar.gz"
+          mkdir -p dist/${PKG_NAME}
+          
+          # Copy sensor binary
+          cp target/release/sensors dist/${PKG_NAME}/
+          
+          # Copy README and license documentation
+          cp README.md dist/${PKG_NAME}/README_sensors.md
+          cp LICENSE-APACHE dist/${PKG_NAME}/
+          cp LICENSE-MIT dist/${PKG_NAME}/
+          cp LICENSE-GPL2 dist/${PKG_NAME}/
+          
+          # Copy demo runners
+          mkdir -p dist/${PKG_NAME}/demo
+          cp ../demo/run_demo.sh dist/${PKG_NAME}/demo/
+          cp ../demo/supply_chain_demo.sh dist/${PKG_NAME}/demo/
+          cp ../demo/event_viewer.html dist/${PKG_NAME}/demo/
+          
+          # Create archive
+          cd dist
+          tar -czvf ${TAR_NAME} ${PKG_NAME}
+          sha256sum ${TAR_NAME} > ${TAR_NAME}.sha256
+          
+          echo "tar_name=${TAR_NAME}" >> $GITHUB_OUTPUT
+          echo "### Generated Artifacts"
+          ls -lh
+
+      - name: Upload Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: securechain-dist-tarball
+          path: |
+            sensors/dist/*.tar.gz
+            sensors/dist/*.sha256
+          retention-days: 14
