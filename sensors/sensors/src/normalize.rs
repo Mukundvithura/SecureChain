@@ -248,7 +248,7 @@ impl Normalizer {
             || path.contains("/.mozilla/")                     // browser profile + telemetry
             || path.contains("/.cache/mozilla/")               // browser disk cache
             || path.starts_with("/run/systemd/journal/")       // journal stream sockets
-            || path.starts_with("/var/lib/xkb/");              // compiled keymaps
+            || path.starts_with("/var/lib/xkb/"); // compiled keymaps
 
         desktop || self.extra_mutes.iter().any(|m| path.contains(m.as_str()))
     }

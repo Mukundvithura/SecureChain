@@ -94,7 +94,10 @@ fn try_exec(ctx: TracePointContext) -> Result<u32, u32> {
     } {
         Ok(f) => f,
         Err(_) => {
-            info!(&ctx, "exec pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid);
+            info!(
+                &ctx,
+                "exec pid={} ppid={} uid={} path=<unreadable>", pid, ppid, uid
+            );
             return Ok(0);
         }
     };

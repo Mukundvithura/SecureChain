@@ -40,15 +40,30 @@ jobs:
   clippy:
     name: Clippy Linter (Userspace & Common)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust Stable toolchain
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
+
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+
+      - name: Install Rust nightly (for eBPF build.rs)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -61,13 +76,28 @@ jobs:
   test:
     name: Unit Tests (Userspace)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust Stable toolchain
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm libelf-dev
+
+      - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust nightly (for eBPF build.rs)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Install bpf-linker
+        uses: taiki-e/install-action@v2
+        with:
+          tool: bpf-linker
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -131,6 +161,9 @@ jobs:
     needs: [format, clippy, test, build]
     runs-on: ubuntu-latest
     if: always()
+    defaults:
+      run:
+        working-directory: .
     steps:
       - name: Check overall status
         run: |

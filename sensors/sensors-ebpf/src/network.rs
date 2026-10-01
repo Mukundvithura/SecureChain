@@ -132,7 +132,12 @@ pub struct UdpSock {
 }
 
 impl UdpSock {
-    const EMPTY: UdpSock = UdpSock { daddr: 0, dport: 0, reported: 0, _pad: 0 };
+    const EMPTY: UdpSock = UdpSock {
+        daddr: 0,
+        dport: 0,
+        reported: 0,
+        _pad: 0,
+    };
 }
 
 /// `sockaddr_in`: `sin_family` u16, `sin_port` u16 (network order), `sin_addr`
@@ -262,7 +267,12 @@ pub fn udp_connect(ctx: TracePointContext) -> u32 {
     // its route probes. `read_sockaddr_in` returns None for it, which resets the
     // remembered peer, exactly as the kernel does.
     let next = match read_sockaddr_in(addr) {
-        Some((daddr, dport)) => UdpSock { daddr, dport, reported: 0, _pad: 0 },
+        Some((daddr, dport)) => UdpSock {
+            daddr,
+            dport,
+            reported: 0,
+            _pad: 0,
+        },
         None => UdpSock::EMPTY,
     };
     let _ = UDP_SOCKS.insert(&key, &next, 0);
@@ -280,7 +290,10 @@ pub fn udp_sendto(ctx: TracePointContext) -> u32 {
 /// member of `struct msghdr`, so it sits at offset 0 of that buffer.
 #[tracepoint]
 pub fn udp_sendmsg(ctx: TracePointContext) -> u32 {
-    udp_send(&ctx, msg_name(unsafe { ctx.read_at::<u64>(24) }.unwrap_or(0)))
+    udp_send(
+        &ctx,
+        msg_name(unsafe { ctx.read_at::<u64>(24) }.unwrap_or(0)),
+    )
 }
 
 /// `sendmmsg(fd, mmsghdr, vlen, flags)` — fd@16, mmsghdr@24. `struct mmsghdr`
@@ -290,7 +303,10 @@ pub fn udp_sendmsg(ctx: TracePointContext) -> u32 {
 /// same server.
 #[tracepoint]
 pub fn udp_sendmmsg(ctx: TracePointContext) -> u32 {
-    udp_send(&ctx, msg_name(unsafe { ctx.read_at::<u64>(24) }.unwrap_or(0)))
+    udp_send(
+        &ctx,
+        msg_name(unsafe { ctx.read_at::<u64>(24) }.unwrap_or(0)),
+    )
 }
 
 /// `msghdr.msg_name`, or null if there is no header to read it from. Null is
@@ -341,7 +357,16 @@ fn udp_send(ctx: &TracePointContext, addr: *const u8) -> u32 {
         return 0; // already reported this destination for this socket
     }
 
-    let _ = UDP_SOCKS.insert(&key, &UdpSock { daddr, dport, reported: 1, _pad: 0 }, 0);
+    let _ = UDP_SOCKS.insert(
+        &key,
+        &UdpSock {
+            daddr,
+            dport,
+            reported: 1,
+            _pad: 0,
+        },
+        0,
+    );
     submit_udp(pid, daddr, dport);
     0
 }
