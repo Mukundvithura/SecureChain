@@ -15,6 +15,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SENSORS="$ROOT/sensors"
 BIN="$SENSORS/target/debug/sensors"
+ENGINE_DIR="$ROOT/detection_engine"
+ENGINE="$ENGINE_DIR/target/debug/secrisk-engine"
 CAPTURE="${SECRISK_CAPTURE:-$SENSORS/captures/demo-$(date +%Y%m%d-%H%M%S).jsonl}"
 LOG="$(mktemp)"
 
@@ -37,6 +39,10 @@ trap cleanup EXIT INT TERM
 if [[ ! -x "$BIN" ]]; then
     say "Building the sensors (first run only)…"
     ( cd "$SENSORS" && cargo build ) || die "cargo build failed"
+fi
+if [[ ! -x "$ENGINE" ]]; then
+    say "Building the correlation engine (first run only)…"
+    ( cd "$ENGINE_DIR" && cargo build ) || die "cargo build failed"
 fi
 
 # Prompt for the password now, with a clear reason, rather than having sudo
@@ -83,16 +89,26 @@ echo
 say "The chain it reconstructed:"
 echo
 if command -v jq >/dev/null 2>&1; then
-    jq -r 'select(.comm == "npm-install.sh"
-                  or ([.ancestry[]?.comm] | index("npm-install.sh")))
+    # npm retitles itself, so its comm reads "npm install /tm…".
+    jq -r 'select((.comm | startswith("npm"))
+                  or ([.ancestry[]?.comm | startswith("npm")] | any))
            | "  \(.time[11:23])  \(.action | ascii_upcase | .[0:12])  \(.path // "\(.daddr):\(.dport)")"' \
         "$CAPTURE"
 else
-    grep 'npm-install.sh' "$CAPTURE"
+    grep -e '"comm":"npm' -e 'left-pad' "$CAPTURE"
     echo
     say "(install jq for readable output)"
 fi
 
 echo
+say "What the correlation engine makes of it:"
+echo
+# Headlines (one per severity band the chain entered) are on stderr; the full
+# JSON reports go next to the capture.
+REPORT="${CAPTURE%.jsonl}.engine.json"
+"$ENGINE" "$CAPTURE" 2>&1 >"$REPORT" | sed 's/^/  /'
+
+echo
+say "Engine report: $REPORT"
 say "Capture: $CAPTURE"
 say "Open demo/event_viewer.html and drop that file on it, then click Chains."

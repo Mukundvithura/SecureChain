@@ -87,7 +87,7 @@ The implementation is Rust throughout: eBPF programs and the userspace loader ar
 - [x] Unit tests for the normalizer
 
 #### Demo
-- [x] Simulated compromised npm postinstall (`demo/supply_chain_demo.sh`)
+- [x] Compromised npm postinstall, installed with real `npm install --offline` from a local tarball (`demo/supply_chain_demo.sh`)
 - [x] One-command demo that runs sensors + attack and prints the chain (`demo/run_demo.sh`)
 - [x] Browser viewer for captures (`demo/event_viewer.html`)
 
@@ -109,20 +109,20 @@ The implementation is Rust throughout: eBPF programs and the userspace loader ar
 ### Tasks
 
 #### Behavioral Correlation Engine
-- [ ] Group events into chains by process lineage (`ancestry`) within a time window (default: 60 s)
-- [ ] Define an attack chain pattern library (e.g. package manager → shell → secret read → network)
-- [ ] Implement pattern matching over the live stream and over captures
-- [ ] Integration tests replaying captured attack runs
+- [x] Group events into chains by process lineage (`ancestry`) within a time window (default: 60 s)
+- [x] Define an attack chain pattern library (e.g. package manager → shell → secret read → network)
+- [x] Implement pattern matching over the live stream and over captures
+- [x] Integration tests replaying captured attack runs
 
 #### Storage
 - [ ] PostgreSQL schema for `events`, `chains`, and `alerts`
 - [ ] Persist events and matched chains
 
 #### Risk Scoring Engine
-- [ ] Implement weighted risk score formula: `Process + File + Network + Context`
-- [ ] Define scoring weights per event type and severity category
-- [ ] Map scored alerts to MITRE ATT&CK techniques
-- [ ] Apply severity thresholds (Low / Medium / High / Critical)
+- [x] Implement weighted risk score formula: `Process + File + Network + Context`
+- [x] Define scoring weights per event type and severity category
+- [x] Map scored alerts to MITRE ATT&CK techniques
+- [x] Apply severity thresholds (Low / Medium / High / Critical)
 
 #### Dashboard
 - [ ] Live event stream, active alerts, risk score timeline

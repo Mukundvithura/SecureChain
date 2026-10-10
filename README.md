@@ -54,8 +54,9 @@ See [`docs/architecture/system_architecture.md`](docs/architecture/system_archit
 
 ## Quick Start
 
-The demo runs the whole pipeline — sensors, a simulated compromised package,
-and the reconstructed attack chain — in one command:
+The demo runs the whole pipeline — sensors, a real `npm install` of a compromised
+local package (offline, needs npm), and the reconstructed attack chain — in one
+command:
 
 ```shell
 ./demo/run_demo.sh
@@ -74,8 +75,16 @@ first run, and prints the chain it caught:
   00:05:57.350  CONNECT      104.20.23.154:80
 ```
 
-Every step shares one process lineage — that link is what the correlation engine
-will consume. The capture is kept at `sensors/captures/demo-<timestamp>.jsonl`;
+Every step shares one process lineage. The correlation engine groups the steps
+into one chain by that lineage, scores it and prints its alerts:
+
+```
+  [Medium 55] chain 1 bash (pid 454122): P3 L1 F1
+  [Critical 85] chain 1 bash (pid 454122): P3 L1 F1 F2 N2 C3
+```
+
+To score any capture, or the live stream, see
+[`detection_engine/README.md`](detection_engine/README.md). The capture is kept at `sensors/captures/demo-<timestamp>.jsonl`;
 open [`demo/event_viewer.html`](demo/event_viewer.html) and drop the file on it
 for a readable view.
 
@@ -122,7 +131,7 @@ SecRisk/
 │
 ├── demo/
 │   ├── run_demo.sh                # one-command demo: sensors + attack + chain
-│   ├── supply_chain_demo.sh       # the simulated compromised npm postinstall
+│   ├── supply_chain_demo.sh       # a real offline npm install of a compromised package
 │   └── event_viewer.html          # drop a capture on it to read it
 │
 ├── docs/
