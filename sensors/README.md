@@ -118,6 +118,21 @@ substrings, matched against the resolved path:
 sudo -E SECRISK_MUTE=/.claude/,/.cargo/,/target/debug/ ./target/debug/sensors
 ```
 
+Claude Code is muted by default: the `claude` process and **everything it
+starts** (its shells, `git`, builds) produce no events at all. The loader marks
+them in the kernel's `MUTED` map at startup and as they appear, so the probes
+drop them before they reach the ring buffer. `SECRISK_MUTE_EXE` replaces the
+default list of executable-path substrings; set it empty to turn muting off:
+
+```shell
+sudo -E SECRISK_MUTE_EXE=/.local/share/claude/,/opt/my-ide/ ./target/debug/sensors
+sudo -E SECRISK_MUTE_EXE= ./target/debug/sensors      # record Claude Code too
+```
+
+Because the whole subtree is muted, anything launched *from* Claude Code is
+invisible too, including `demo/run_demo.sh`. Run the demo from your own
+terminal.
+
 ## Captures
 
 Every run writes its events to a capture file as well as stdout, so nothing is

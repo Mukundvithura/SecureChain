@@ -24,7 +24,7 @@
 //! unknown, and no consumer has to distinguish a real zero from a missing one.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     fs,
 };
@@ -42,6 +42,17 @@ const ANCESTRY_MAX: usize = 8;
 /// Long argv (a linker line, a `find` invocation) is truncated rather than
 /// dropped — the head is the part that identifies the command.
 const CMDLINE_MAX: usize = 512;
+/// How far up the parent chain to look for a muted ancestor. Deeper than
+/// [`ANCESTRY_MAX`]: an agent's shell running a script running a build is
+/// already six levels, and a miss here leaks the whole subtree.
+const MUTE_DEPTH: usize = 32;
+/// Bound on the muted-pid cache. It is only a cache — clearing it costs a
+/// re-walk of the parent chain, never a leak — so a crude reset is enough.
+const MUTED_CACHE_CAP: usize = 16_384;
+/// What `$SECRISK_MUTE_EXE` means when it is unset: Claude Code's native
+/// install, whose skill syncing, API traffic and tool calls would otherwise
+/// fill every capture taken while it runs.
+const DEFAULT_MUTE_EXE: &[&str] = &["/.local/share/claude/"];
 
 pub struct Normalizer {
     clock: Clock,
@@ -53,6 +64,16 @@ pub struct Normalizer {
     /// patterns. Keeping the site-specific half in configuration is what lets
     /// the compiled-in list stay short and defensible.
     extra_mutes: Vec<String>,
+    /// Substrings from `$SECRISK_MUTE_EXE` (default [`DEFAULT_MUTE_EXE`]),
+    /// matched against `exe`. A matching process *and everything it starts* is
+    /// muted: every event, not just writes.
+    muted_exes: Vec<String>,
+    /// Pids known to be in a muted subtree.
+    muted: HashSet<u32>,
+    /// Pids muted since the last [`Normalizer::take_newly_muted`], for the
+    /// loader to push into the kernel's `MUTED` map so the probes stop
+    /// emitting for them (and, through fork propagation, their children).
+    newly_muted: Vec<u32>,
 }
 
 impl Normalizer {
@@ -62,7 +83,10 @@ impl Normalizer {
             users: load_users(),
             procs: ProcTable::default(),
             self_pid: std::process::id(),
-            extra_mutes: load_extra_mutes(),
+            extra_mutes: load_list("SECRISK_MUTE"),
+            muted_exes: load_mute_exes(),
+            muted: HashSet::new(),
+            newly_muted: Vec::new(),
         }
     }
 
@@ -89,6 +113,14 @@ impl Normalizer {
                 return None;
             }
         };
+
+        // A muted process's events are dropped before any work is done on them.
+        // An exec is checked further down instead, once the table holds the
+        // new image: it may be the muted tool starting, or a reused pid
+        // leaving a muted subtree.
+        if h.kind != EVENT_EXEC && self.is_muted(pid, false) {
+            return None;
+        }
 
         // Resolve the file payload before anything else, so a suppressed write
         // costs one readlink and nothing more — no /proc enrichment, no ancestry
@@ -128,6 +160,9 @@ impl Normalizer {
                     container: read_container(pid),
                 },
             );
+            if self.is_muted(pid, true) {
+                return None;
+            }
             Some(path)
         } else {
             None
@@ -251,6 +286,70 @@ impl Normalizer {
             || path.starts_with("/var/lib/xkb/");              // compiled keymaps
 
         desktop || self.extra_mutes.iter().any(|m| path.contains(m.as_str()))
+    }
+
+    /// Whether `pid` is a muted tool or descends from one.
+    ///
+    /// Walks the parent chain through the process table, stopping at the first
+    /// pid already known to be muted or whose `exe` matches a mute pattern.
+    /// `fresh_exec` drops `pid`'s cached verdict first: after an exec it is a
+    /// new program, and only its ancestry can keep it muted.
+    fn is_muted(&mut self, pid: u32, fresh_exec: bool) -> bool {
+        if self.muted_exes.is_empty() {
+            return false;
+        }
+        if fresh_exec {
+            self.muted.remove(&pid);
+        } else if self.muted.contains(&pid) {
+            return true;
+        }
+        let mut cur = pid;
+        let mut found = false;
+        for _ in 0..MUTE_DEPTH {
+            if cur != pid && self.muted.contains(&cur) {
+                found = true;
+                break;
+            }
+            let Some(info) = self.procs.get(cur) else {
+                break;
+            };
+            let (ppid, exe) = (info.ppid, info.exe.clone());
+            if exe.is_some_and(|e| self.muted_exes.iter().any(|m| e.contains(m.as_str()))) {
+                found = true;
+                break;
+            }
+            if ppid == 0 || ppid == cur {
+                break;
+            }
+            cur = ppid;
+        }
+        if found {
+            if self.muted.len() >= MUTED_CACHE_CAP {
+                self.muted.clear();
+            }
+            self.muted.insert(pid);
+            self.newly_muted.push(pid);
+        }
+        found
+    }
+
+    /// Mute every process already running under a muted tool. Called once at
+    /// startup, because a tool that was running before the sensor attached
+    /// never execs where the probes can see it.
+    pub fn seed_muted(&mut self) {
+        let Ok(dir) = fs::read_dir("/proc") else {
+            return;
+        };
+        for entry in dir.flatten() {
+            if let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
+                self.is_muted(pid, false);
+            }
+        }
+    }
+
+    /// Pids muted since the last call, for the loader to push into the kernel.
+    pub fn take_newly_muted(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.newly_muted)
     }
 
     /// `pid` and its parents, nearest first. Stops at pid 0 (the walk ran off the
@@ -493,20 +592,35 @@ fn read_container(pid: u32) -> Option<String> {
     None
 }
 
-/// Extra noise substrings from `$SECRISK_MUTE`, comma-separated. Site-specific
+/// A comma-separated list from the environment variable `var`.
+///
+/// `$SECRISK_MUTE` holds extra noise substrings for write paths. Site-specific
 /// suppression belongs in configuration rather than in the binary: the built-in
 /// list covers what any Linux desktop produces, and this covers what *your* host
 /// produces (an editor's session log, a CI agent's scratch directory).
 ///
 ///     SECRISK_MUTE=/.claude/,/node_modules/.cache/ sudo -E ./sensors
-fn load_extra_mutes() -> Vec<String> {
-    std::env::var("SECRISK_MUTE")
+///
+fn load_list(var: &str) -> Vec<String> {
+    std::env::var(var)
         .unwrap_or_default()
         .split(',')
         .map(str::trim)
         .filter(|m| !m.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// Executable-path substrings whose processes, and all their descendants, are
+/// muted: `$SECRISK_MUTE_EXE` when set (empty turns muting off), otherwise
+/// [`DEFAULT_MUTE_EXE`].
+///
+///     SECRISK_MUTE_EXE=/opt/my-ide/,/.local/share/claude/ sudo -E ./sensors
+fn load_mute_exes() -> Vec<String> {
+    match std::env::var_os("SECRISK_MUTE_EXE") {
+        Some(_) => load_list("SECRISK_MUTE_EXE"),
+        None => DEFAULT_MUTE_EXE.iter().map(|m| m.to_string()).collect(),
+    }
 }
 
 /// uid → name, read once from `/etc/passwd`. First entry wins, so a uid shared
@@ -689,6 +803,9 @@ mod tests {
     fn normalizer() -> Normalizer {
         let mut n = Normalizer::new();
         n.self_pid = 0;
+        // The default mute would silence these tests whenever they run under
+        // Claude Code, whose descendant the test process then is.
+        n.muted_exes.clear();
         n
     }
 
@@ -846,9 +963,81 @@ mod tests {
     #[test]
     fn parses_the_mute_list_from_the_environment() {
         unsafe { std::env::set_var("SECRISK_MUTE", " /a/ , ,/b/ ") };
-        assert_eq!(load_extra_mutes(), vec!["/a/", "/b/"]);
+        assert_eq!(load_list("SECRISK_MUTE"), vec!["/a/", "/b/"]);
         unsafe { std::env::remove_var("SECRISK_MUTE") };
-        assert!(load_extra_mutes().is_empty());
+        assert!(load_list("SECRISK_MUTE").is_empty());
+    }
+
+    /// A normalizer muting Claude Code, with a fake `claude` process at
+    /// `CLAUDE_PID` in its table. The test process itself sits beneath it
+    /// unless a test says otherwise.
+    const CLAUDE_PID: u32 = 4_000_000;
+    fn muting_normalizer() -> Normalizer {
+        let mut n = normalizer();
+        n.muted_exes = vec!["/.local/share/claude/".to_string()];
+        n.procs.insert(
+            CLAUDE_PID,
+            ProcInfo {
+                ppid: 1,
+                comm: "claude".to_string(),
+                exe: Some("/home/u/.local/share/claude/versions/2.1.286".to_string()),
+                cmdline: None,
+                container: None,
+            },
+        );
+        n
+    }
+
+    fn child_of(n: &mut Normalizer, ppid: u32, exe: &str) {
+        n.procs.insert(
+            std::process::id(),
+            ProcInfo {
+                ppid,
+                comm: "test".to_string(),
+                exe: Some(exe.to_string()),
+                cmdline: None,
+                container: None,
+            },
+        );
+    }
+
+    #[test]
+    fn a_muted_tool_drops_all_its_events() {
+        let mut n = muting_normalizer();
+        let mut connect = event_for_self(EVENT_NET);
+        connect.header.pid = CLAUDE_PID;
+        // A connect, which no path mute could have caught.
+        assert!(n.normalize(&connect).is_none());
+        assert_eq!(n.take_newly_muted(), vec![CLAUDE_PID]);
+    }
+
+    #[test]
+    fn what_a_muted_tool_runs_is_muted_too() {
+        let mut n = muting_normalizer();
+        child_of(&mut n, CLAUDE_PID, "/usr/bin/git");
+        let mut event = event_for_self(EVENT_EXEC);
+        event.header.ppid = CLAUDE_PID;
+        let path = b"/usr/bin/git";
+        unsafe { event.payload.exec.filename[..path.len()].copy_from_slice(path) };
+        assert!(n.normalize(&event).is_none());
+        // And its later events, without another walk.
+        assert!(n.normalize(&event_for_self(EVENT_NET)).is_none());
+    }
+
+    #[test]
+    fn processes_outside_a_muted_tool_are_kept() {
+        let mut n = muting_normalizer();
+        child_of(&mut n, 1, "/usr/bin/curl");
+        assert!(n.normalize(&event_for_self(EVENT_NET)).is_some());
+    }
+
+    #[test]
+    fn claude_code_is_muted_unless_configured_otherwise() {
+        unsafe { std::env::remove_var("SECRISK_MUTE_EXE") };
+        assert_eq!(load_mute_exes(), vec!["/.local/share/claude/"]);
+        unsafe { std::env::set_var("SECRISK_MUTE_EXE", "") };
+        assert!(load_mute_exes().is_empty());
+        unsafe { std::env::remove_var("SECRISK_MUTE_EXE") };
     }
 
     #[test]

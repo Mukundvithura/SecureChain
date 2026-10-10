@@ -6,7 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use aya::{maps::RingBuf, programs::TracePoint};
+use aya::{
+    maps::{HashMap, MapData, RingBuf},
+    programs::TracePoint,
+};
 #[rustfmt::skip]
 use log::{debug, warn};
 use sensors_common::Event;
@@ -55,6 +58,24 @@ async fn main() -> anyhow::Result<()> {
             });
         }
     }
+    // Enrichment state lives across the whole session: the process table the
+    // normalizer builds is what lets an event name a parent that has already
+    // exited.
+    let mut normalizer = Normalizer::new();
+
+    // Mute tools that were already running (Claude Code, by default) before any
+    // probe attaches: the kernel's fork propagation then keeps everything they
+    // start out of the ring buffer from the first event on.
+    let mut muted: HashMap<MapData, u32, u8> = HashMap::try_from(
+        ebpf.take_map("MUTED")
+            .ok_or_else(|| anyhow::anyhow!("MUTED map not found"))?,
+    )?;
+    normalizer.seed_muted();
+    let seeded = push_muted(&mut normalizer, &mut muted);
+    if seeded > 0 {
+        eprintln!("Muted {seeded} processes (SECRISK_MUTE_EXE)");
+    }
+
     // Track parent PIDs first so forks are recorded before we observe execve.
     let fork_prog: &mut TracePoint = ebpf.program_mut("sched_fork").unwrap().try_into()?;
     fork_prog.load()?;
@@ -111,11 +132,6 @@ async fn main() -> anyhow::Result<()> {
     let mut async_fd =
         tokio::io::unix::AsyncFd::with_interest(ring, tokio::io::Interest::READABLE)?;
 
-    // Enrichment state lives across the whole session: the process table the
-    // normalizer builds is what lets an event name a parent that has already
-    // exited.
-    let mut normalizer = Normalizer::new();
-
     // Drain and wait for the shutdown signal in the *same* task rather than
     // spawning the drain: at shutdown we still own the ring buffer, so we can
     // take one last pass over it before flushing instead of losing whatever
@@ -132,7 +148,7 @@ async fn main() -> anyhow::Result<()> {
         tokio::select! {
             guard = async_fd.readable_mut() => {
                 let mut guard = guard?;
-                written += drain(guard.get_inner_mut(), &mut capture, &mut normalizer);
+                written += drain(guard.get_inner_mut(), &mut capture, &mut normalizer, &mut muted);
                 guard.clear_ready();
             }
             res = &mut ctrl_c => {
@@ -144,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
     }
     eprintln!("Exiting...");
 
-    written += drain(async_fd.get_mut(), &mut capture, &mut normalizer);
+    written += drain(async_fd.get_mut(), &mut capture, &mut normalizer, &mut muted);
     capture.flush()?;
     eprintln!("Wrote {written} events to {}", capture_path.display());
 
@@ -156,9 +172,10 @@ async fn main() -> anyhow::Result<()> {
 /// reported once per event and otherwise ignored: losing the log is not a
 /// reason to stop monitoring.
 fn drain(
-    ring: &mut RingBuf<aya::maps::MapData>,
+    ring: &mut RingBuf<MapData>,
     capture: &mut impl Write,
     normalizer: &mut Normalizer,
+    muted: &mut HashMap<MapData, u32, u8>,
 ) -> u64 {
     let mut written = 0;
     while let Some(item) = ring.next() {
@@ -168,7 +185,11 @@ fn drain(
         // `None` means the normalizer dropped it — suppressed noise or an
         // event kind it does not know. It logs its own reason; here it is just
         // an event that produces no line.
-        let Some(line) = normalizer.normalize(&event) else {
+        let line = normalizer.normalize(&event);
+        // A muted tool started after we attached, or a child forked before the
+        // kernel knew to mute it: tell the kernel now, so it stops emitting.
+        push_muted(normalizer, muted);
+        let Some(line) = line else {
             continue;
         };
         println!("{line}");
@@ -178,6 +199,20 @@ fn drain(
         written += 1;
     }
     written
+}
+
+/// Copy the normalizer's newly muted pids into the kernel's `MUTED` map,
+/// returning how many there were. A failed insert (the LRU map is never full,
+/// so this is unexpected) only costs kernel-side filtering: the normalizer
+/// still drops that pid's events.
+fn push_muted(normalizer: &mut Normalizer, muted: &mut HashMap<MapData, u32, u8>) -> usize {
+    let pids = normalizer.take_newly_muted();
+    for &pid in &pids {
+        if let Err(e) = muted.insert(pid, 1, 0) {
+            debug!("could not mute pid {pid} in the kernel: {e}");
+        }
+    }
+    pids.len()
 }
 
 /// Where the capture lands: `$SECRISK_CAPTURE` if set, else a timestamped file

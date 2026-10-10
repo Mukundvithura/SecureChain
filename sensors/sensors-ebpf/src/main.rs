@@ -42,10 +42,12 @@ static UDP_SOCKS: LruHashMap<u64, network::UdpSock> = LruHashMap::with_max_entri
 #[map]
 static PENDING_SOCK: LruHashMap<u32, u8> = LruHashMap::with_max_entries(1024, 0);
 
-// pids whose events we suppress: the noisy vpnip panel widget and any process
-// descended from it. LRU so old entries self-evict (no leak).
+// pids whose events we suppress, with every process descended from them: the
+// noisy vpnip panel widget, and the tools userspace mutes ($SECRISK_MUTE_EXE —
+// Claude Code by default). Sized for an agent's many short-lived children; LRU
+// so old entries self-evict (no leak).
 #[map]
-static MUTED: LruHashMap<u32, u8> = LruHashMap::with_max_entries(1024, 0);
+static MUTED: LruHashMap<u32, u8> = LruHashMap::with_max_entries(8192, 0);
 
 #[cfg(not(test))]
 #[panic_handler]
