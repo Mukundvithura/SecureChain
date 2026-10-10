@@ -36,6 +36,15 @@ pub const INTERPRETERS: &[&str] = &[
 
 pub const SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "fish"];
 
+/// L12: the sshd listener/privsep process. A command whose parent is this and
+/// nothing more specific is pre-authentication execution.
+pub const SSHD_LISTENER: &[&str] = &["sshd"];
+/// L12: per-session processes a normal login goes through, so the user's shell
+/// hangs off one of these, not the listener. OpenSSH 9.8+ split these out;
+/// `sshd` here also covers the classic `sshd: user@pty` privsep child, which
+/// still reports comm `sshd` — hence the listener check alone is not enough.
+pub const SSHD_SESSION: &[&str] = &["sshd-session", "sshd-auth"];
+
 /// P2.
 pub const DOWNLOADERS: &[&str] = &["curl", "wget", "nc", "ncat", "netcat", "socat"];
 

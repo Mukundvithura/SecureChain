@@ -61,8 +61,10 @@ summarizes every chain, which is what a false-positive count needs.
 
 Choices the plan left open are marked **Decision** in
 [`src/rules/lists.rs`](src/rules/lists.rs), [`src/chain.rs`](src/chain.rs)
-and [`src/score.rs`](src/score.rs). L12 (pre-authentication sshd execution)
-is not implemented until a real SSH login has been captured.
+and [`src/score.rs`](src/score.rs). All 25 rules are implemented; L12
+(pre-authentication sshd execution) assumes the OpenSSH 9.8+ process model
+(`sshd-session` / `sshd-auth`) and still wants validation against a real SSH
+login capture.
 
 ## Test
 
@@ -77,7 +79,18 @@ non-firing case.
 
 ## Evaluate
 
-`eval/` holds a labelled set — one attack and the benign workloads most likely
+`eval/` holds a labelled set — two attacks and the benign workloads most likely
 to be mistaken for one — and scripts to record captures from the sensors and
 score them into precision, recall and a false-positive rate. See
 [`eval/README.md`](eval/README.md).
+
+## Benchmark
+
+```shell
+cargo run --release --example throughput [events]
+```
+
+Times `Engine::process` over a synthetic stream, in isolation from the sensors
+and JSON parsing, and reports nanoseconds per event and events per second. On a
+13th-gen i7 it processes ~0.4 M events/s (~2.6 µs/event) — orders of magnitude
+above any real sensor event rate.

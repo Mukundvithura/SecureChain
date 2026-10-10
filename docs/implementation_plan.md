@@ -149,13 +149,13 @@ The implementation is Rust throughout: eBPF programs and the userspace loader ar
 ### Tasks
 
 #### Evaluation
-- [x] Labelled evaluation set and scoring harness (`detection_engine/eval/`): one attack plus the benign builds, browser, SSH and `.env` cases most likely to false-positive, with `record.sh` (capture under the sensors) and `run_eval.sh` (score into precision / recall / FPR)
+- [x] Labelled evaluation set and scoring harness (`detection_engine/eval/`): the npm-postinstall and pip reverse-shell attacks plus the benign builds, browser, SSH and `.env` cases most likely to false-positive, with `record.sh` (capture under the sensors) and `run_eval.sh` (score into precision / recall / FPR)
 - [ ] Record the evaluation captures on the host and populate the results
-- [ ] Add a Python reverse-shell case to the set
 - [ ] Measure detection rate and false positive rate
 - [ ] Compare against Falco with equivalent ruleset
 
 #### Benchmarking
+- [x] Measure engine per-event cost (`cargo run --release --example throughput`): ~2.6 µs/event, ~0.4 M events/s on a 13th-gen i7
 - [ ] Measure CPU overhead: idle vs. monitored system
 - [ ] Measure memory usage of eBPF maps and userspace process
 - [ ] Measure event processing latency (kernel capture → alert generation)

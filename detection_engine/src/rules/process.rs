@@ -58,7 +58,30 @@ pub fn check(ctx: &Ctx, found: &mut Vec<Finding>) {
             format!("{tool} under {}", ctx.anchor_name()),
         ));
     }
-    // L12 (pre-authentication sshd execution) is not implemented: the plan
-    // holds it until a real SSH login is captured to tell the sshd listener
-    // from its per-session processes.
+    // L12: a command running directly under the sshd listener rather than a
+    // per-session process is pre-authentication execution — the shape of the
+    // xz/liblzma backdoor, which ran its payload inside the privileged sshd
+    // before any login. On OpenSSH 9.8+ (this host is 10.4) a normal login
+    // reaches the user's shell through sshd-session / sshd-auth, so the
+    // listener directly spawning an ordinary command is the anomaly.
+    // **Decision:** the parent must be the listener and not a session worker,
+    // and the child must not itself be an sshd helper, so the listener
+    // forking its own session process does not match. Limitation: on pre-9.8
+    // sshd the privsep child also reports comm `sshd`, so this would need an
+    // argv check (`sshd: user@…`) there — out of scope for the modern target.
+    if let Some(parent) = ctx.parent()
+        && parent.is(SSHD_LISTENER)
+        && !parent.is(SSHD_SESSION)
+        && !p.is(SSHD_LISTENER)
+        && !p.is(SSHD_SESSION)
+    {
+        found.push(Finding::new(
+            L12,
+            format!("{} ran directly under the sshd listener", name_of(p)),
+        ));
+    }
+}
+
+fn name_of(p: &crate::proctable::Proc) -> &str {
+    p.names.first().map_or(p.comm.as_str(), String::as_str)
 }

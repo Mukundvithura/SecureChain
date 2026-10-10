@@ -5,6 +5,7 @@
 #
 # case	class	expect_alert	min_band	max_band	note
 attack-npm	attack	yes	Critical	Critical	compromised postinstall: steal key, stage, exfiltrate
+attack-pip-revshell	attack	yes	Medium	Critical	compromised setup.py opens a reverse shell during pip install
 benign-ssh	benign	no	none	none	git/ssh reading its own key is the exempt reader
 benign-firefox	benign	no	none	none	a browser is its own anchor, not a package manager
 benign-npm-native	benign	no	none	Low	clean native addon build (node-gyp, make, gcc)

@@ -156,6 +156,11 @@ impl Ctx<'_> {
         self.anchor_idx == 0
     }
 
+    /// The acting process's immediate parent, if its lineage reaches it.
+    pub fn parent(&self) -> Option<&Proc> {
+        self.lineage.get(1).copied()
+    }
+
     /// Under a package manager, build tool or C4 runtime dependency.
     pub fn in_dependency_chain(&self) -> bool {
         self.chain.anchor.kind != AnchorKind::User

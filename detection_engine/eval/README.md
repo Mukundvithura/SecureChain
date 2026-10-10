@@ -1,6 +1,6 @@
 # Evaluation set
 
-A small labelled set for measuring the engine: one supply-chain attack and the
+A small labelled set for measuring the engine: two supply-chain attacks and the
 benign workloads most likely to look like one — builds that run compilers and
 write object files, a browser reaching out, an SSH session reading its own key,
 an app reading its `.env`. It produces the precision, recall and
@@ -51,6 +51,7 @@ Cases with no capture yet are marked SKIP.
 | Case | Class | Should | Why it is here |
 |------|-------|--------|----------------|
 | `attack-npm` | attack | **Critical** | compromised postinstall: reads an SSH key, stages an implant, exfiltrates |
+| `attack-pip-revshell` | attack | **alert** | compromised `setup.py` opens a bash reverse shell during `pip install` |
 | `benign-ssh` | benign | no alert | `ssh` reading its own key and connecting on 22 is the exempt reader, not a package manager |
 | `benign-firefox` | benign | no alert | a browser is its own anchor; its traffic is not a dependency's |
 | `benign-npm-native` | benign | no alert | `npm` → `make` → `gcc` writing `.o`/`.so`: the classic L6/L7/N1 false positive |
