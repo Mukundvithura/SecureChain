@@ -1,0 +1,13 @@
+# The evaluation set: one attack and the benign cases most likely to trip a
+# supply-chain detector. Each row is a workload in cases/, the label it should
+# get, and the band it should reach. "none" means the chain must stay below
+# Medium (no alert); a benign case that alerts is a false positive.
+#
+# case	class	expect_alert	min_band	max_band	note
+attack-npm	attack	yes	Critical	Critical	compromised postinstall: steal key, stage, exfiltrate
+benign-ssh	benign	no	none	none	git/ssh reading its own key is the exempt reader
+benign-firefox	benign	no	none	none	a browser is its own anchor, not a package manager
+benign-npm-native	benign	no	none	Low	clean native addon build (node-gyp, make, gcc)
+benign-pip-cext	benign	no	none	Low	pip building a C extension (setuptools, gcc)
+benign-cargo-buildrs	benign	no	none	Low	cargo running a crate's build.rs
+benign-node-env	benign	no	none	none	app reads its own .env, then its database

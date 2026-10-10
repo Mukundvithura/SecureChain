@@ -1,0 +1,3 @@
+# Captures recorded here are evaluation data, not source.
+*.jsonl
+*.engine.json

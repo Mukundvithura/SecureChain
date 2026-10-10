@@ -72,4 +72,12 @@ cargo test
 
 `tests/scenarios.rs` builds the plan's attack and benign cases from
 hand-written events and replays `tests/fixtures/demo-capture.jsonl`, a real
-capture of `demo/run_demo.sh`.
+capture of `demo/run_demo.sh`. `tests/rules.rs` gives each rule a firing and a
+non-firing case.
+
+## Evaluate
+
+`eval/` holds a labelled set — one attack and the benign workloads most likely
+to be mistaken for one — and scripts to record captures from the sensors and
+score them into precision, recall and a false-positive rate. See
+[`eval/README.md`](eval/README.md).

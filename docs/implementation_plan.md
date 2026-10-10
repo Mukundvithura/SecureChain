@@ -149,10 +149,9 @@ The implementation is Rust throughout: eBPF programs and the userspace loader ar
 ### Tasks
 
 #### Evaluation
-- [ ] Simulate known supply chain attack scenarios:
-  - Malicious npm postinstall script
-  - Python package with reverse shell
-  - Compromised build script reading credentials
+- [x] Labelled evaluation set and scoring harness (`detection_engine/eval/`): one attack plus the benign builds, browser, SSH and `.env` cases most likely to false-positive, with `record.sh` (capture under the sensors) and `run_eval.sh` (score into precision / recall / FPR)
+- [ ] Record the evaluation captures on the host and populate the results
+- [ ] Add a Python reverse-shell case to the set
 - [ ] Measure detection rate and false positive rate
 - [ ] Compare against Falco with equivalent ruleset
 
