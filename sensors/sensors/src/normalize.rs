@@ -341,7 +341,11 @@ impl Normalizer {
             return;
         };
         for entry in dir.flatten() {
-            if let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) {
+            if let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u32>().ok())
+            {
                 self.is_muted(pid, false);
             }
         }

@@ -160,7 +160,12 @@ async fn main() -> anyhow::Result<()> {
     }
     eprintln!("Exiting...");
 
-    written += drain(async_fd.get_mut(), &mut capture, &mut normalizer, &mut muted);
+    written += drain(
+        async_fd.get_mut(),
+        &mut capture,
+        &mut normalizer,
+        &mut muted,
+    );
     capture.flush()?;
     eprintln!("Wrote {written} events to {}", capture_path.display());
 
