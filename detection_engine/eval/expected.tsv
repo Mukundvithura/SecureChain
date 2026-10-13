@@ -1,4 +1,4 @@
-# The evaluation set: one attack and the benign cases most likely to trip a
+# The evaluation set: the attacks and the benign cases most likely to trip a
 # supply-chain detector. Each row is a workload in cases/, the label it should
 # get, and the band it should reach. "none" means the chain must stay below
 # Medium (no alert); a benign case that alerts is a false positive.
@@ -6,6 +6,7 @@
 # case	class	expect_alert	min_band	max_band	note
 attack-npm	attack	yes	Critical	Critical	compromised postinstall: steal key, stage, exfiltrate
 attack-pip-revshell	attack	yes	Medium	Critical	compromised setup.py opens a reverse shell during pip install
+attack-xz-build	attack	yes	Medium	High	XZ-style build: make decompresses a test file, a shell writes a .o
 benign-ssh	benign	no	none	none	git/ssh reading its own key is the exempt reader
 benign-firefox	benign	no	none	none	a browser is its own anchor, not a package manager
 benign-npm-native	benign	no	none	Low	clean native addon build (node-gyp, make, gcc)
